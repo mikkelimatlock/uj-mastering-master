@@ -1,0 +1,123 @@
+import librosa
+import numpy as np
+import os
+
+import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
+import matplotlib.cm as cm
+
+from mutagen.mp3 import MP3
+from mutagen.easyid3 import EasyID3
+
+def try_mp3_tags(file_path):
+  try:
+    # if there is metadata
+    audio = MP3(file_path, ID3=EasyID3)
+    return audio
+  except Exception as e:
+    print(f"Error reading ID3 tags: {e}")
+    return None
+
+def read_mp3_tags(file_path):
+  if (audio := try_mp3_tags(file_path)) is not None:
+    print(f"File name: {os.path.basename(file_path)}")
+    print(f"{audio['artist'][0]} - {audio['title'][0]}")
+  else:
+    print(f"File name: {os.path.basename(file_path)}")
+
+def analyze_track_librosa(file_path):
+  # Load the audio file
+  # y is the audio time series and sr is the sampling rate
+  y, sr = librosa.load(file_path)
+
+  # Calculate the maximum amplitude
+  # Librosa's load function normalizes the audio to [-1, 1], so we scale it back
+  max_amplitude = np.max(np.abs(y))
+  # Average amplitude
+  avg_amplitude = np.mean(np.abs(y))
+  
+  # Convert max amplitude to dBFS
+  max_amplitude_dBFS = librosa.amplitude_to_db([max_amplitude], ref=1.0)
+  avg_amplitude_dBFS = librosa.amplitude_to_db([avg_amplitude], ref=1.0)
+
+  # Calculate RMS in dB
+  S, phase = librosa.magphase(librosa.stft(y))
+  rms_stft = librosa.feature.rms(S=S)
+  rms = librosa.feature.rms(y=y)
+  avg_power_dBFS_stft = 20 * np.log10(np.mean(rms_stft))
+  avg_power_dBFS = 20 * np.log10(np.mean(rms))
+
+  return max_amplitude_dBFS[0], avg_amplitude_dBFS[0], avg_power_dBFS, avg_power_dBFS_stft
+
+def plot_macro_time_power_graph(file_path):
+    # Load the audio file
+    y, sr = librosa.load(file_path, mono=True)
+
+    # Define the window and hop length
+    # 10 seconds window and 1 second hop
+    window_length = int(sr * 10)  # 10 seconds in samples
+    hop_length = int(sr * 1)  # 1 second in samples
+
+    # Calculate RMS over the rolling windows
+    rms = librosa.feature.rms(y=y, frame_length=window_length, hop_length=hop_length)
+
+    # Convert frame indices to time
+    times = librosa.frames_to_time(np.arange(rms.shape[1]), sr=sr, hop_length=hop_length)
+
+    # Normalize RMS for color mapping
+    norm = mcolors.Normalize(vmin=0, vmax=0.4)
+
+    # Choose a colormap
+    cmap = cm.autumn
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(10, 4))
+    ax.set_ylim(0., 0.4)
+    for i in range(len(times)-1):
+        ax.fill_between(times[i:i+2], 0, rms[0][i], color=cmap(norm(rms[0][i])), edgecolor='none')
+    
+    # Adding a colorbar to indicate the scale of RMS values
+    sm = cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    cbar = plt.colorbar(sm, ax=ax, label='RMS Power')
+    # cbar.ax.set_yticklabels([f"{x-60.0:.0f} dBFS" for x in cbar.get_ticks()])  # Adjust labels to show true dBFS values
+    
+    ax.set_ylabel('Power')
+    ax.set_xlabel('Time')
+    ax.set_title(f'{os.path.basename(file_path)}')
+    # plt.ylabel('Power')
+    # plt.xlabel('Time (s)')
+    # plt.title(f'{os.path.basename(file_path)}')
+    plt.show(block=False)
+    plt.pause(0.001)
+
+
+
+def find_mp3_files(directory):
+    mp3_files = []
+    # Walk through the directory
+    for root, dirs, files in os.walk(directory):
+        # Filter and append .mp3 files
+        for file in files:
+            if file.endswith(".mp3"):
+                mp3_files.append(os.path.join(root, file))
+    return mp3_files
+
+
+# Replace 'path/to/your/audiofile.mp3' with the path to your audio file
+file_path = []
+with open('./files.txt', 'r') as f:
+  for line in f:
+    if line[0] != '#':
+      file_path.append(line.strip())
+
+for file in file_path:
+  max_amplitude, avg_amplitude, avg_power, avg_power_stft = analyze_track_librosa(file)
+  read_mp3_tags(file)
+  print(f"Maximum Amplitude: {max_amplitude:.2f} dBFS")
+  print(f"Average Amplitude: {avg_amplitude:.2f} dBFS")
+  print(f"Average Power: {avg_power:.2f} dBFS")
+  print(f"Average Power (STFT): {avg_power_stft:.2f} dBFS")
+  plot_macro_time_power_graph(file)
+
+plt.show()
