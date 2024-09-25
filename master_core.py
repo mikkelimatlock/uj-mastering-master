@@ -24,6 +24,13 @@ def read_mp3_tags(file_path):
     print(f"{audio['artist'][0]} - {audio['title'][0]}")
   else:
     print(f"File name: {os.path.basename(file_path)}")
+    
+class AudioFile:
+  def __init__(self, file_path):
+    self.file_path = file_path
+    self.y, self.sr = librosa.load(file_path)
+    self.y_mono = librosa.to_mono(self.y)
+    
 
 def analyze_track_librosa(file_path):
   # Load the audio file
