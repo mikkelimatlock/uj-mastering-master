@@ -29,8 +29,27 @@ class AudioFile:
   def __init__(self, file_path):
     self.file_path = file_path
     self.y, self.sr = librosa.load(file_path)
+    # load automatically normalises everything to [-1.0, 1.0]
+    # and that's alright
     self.y_mono = librosa.to_mono(self.y)
+    self.max_amplitude = np.max(np.abs(self.y_mono))
+    self.avg_amplitude = np.mean(np.abs(self.y_mono))
+  
+  def get_amplitudes(self):
+    return self.max_amplitude, self.avg_amplitude
+  
+  def get_energy_levels_over_time(self, window = 10, hop = 2):
+    # window and hop are in seconds
+    window_samples = window * self.sr
+    hop_samples = hop * self.sr
     
+    # Calculate RMS over the rolling windows
+    self.rms_array = librosa.feature.rms(y=y, frame_length=window_samples, hop_length=hop_samples)
+
+    # Convert frame indices to time
+    times = librosa.frames_to_time(np.arange(rms.shape[1]), sr=sr, hop_length=hop_samples)
+    
+
 
 def analyze_track_librosa(file_path):
   # Load the audio file
