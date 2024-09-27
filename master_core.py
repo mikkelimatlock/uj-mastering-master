@@ -134,7 +134,7 @@ def find_mp3_files(directory):
 file_path = []
 with open('./files.txt', 'r') as f:
   for line in f:
-    if line[0] != '#' and line.strip() != ';':
+    if line[0] != '#' and line[0] != ';':
       file_path.append(line.strip())
 
 for file in file_path:
