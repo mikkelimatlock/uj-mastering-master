@@ -39,15 +39,64 @@ class AudioFile:
     return self.max_amplitude, self.avg_amplitude
   
   def get_energy_levels_over_time(self, window = 10, hop = 2):
-    # window and hop are in seconds
-    window_samples = window * self.sr
-    hop_samples = hop * self.sr
-    
-    # Calculate RMS over the rolling windows
-    self.rms_array = librosa.feature.rms(y=y, frame_length=window_samples, hop_length=hop_samples)
+    """_summary_
 
+    Args:
+        window (int, optional): Length of rolling RMS window in seconds. Defaults to 10.
+        hop (int, optional): Length of window hop in seconds. Defaults to 2.
+    """
+    # check if the window and hop are the same as before    
+    if (self.window != window) or (self.hop != hop):
+      self.window, self.hop = window, hop
+      # only calculate if not already calculated
+      if self.rms_array is None:
+        # window and hop are in seconds
+        window_samples = window * self.sr
+        hop_samples = hop * self.sr
+        
+        # Calculate RMS over the rolling windows
+        self.rms_array = librosa.feature.rms(y=y, frame_length=window_samples, hop_length=hop_samples)
+    
+  def plot_energy_levels_over_time(self, display='window'):  
+    """_summary_
+
+    Args:
+        display (str, optional): Option for where to display the plot. Defaults to 'window'.
+                                 'window' - display in a pyplot window
+                                 'gui' - for directing to the GUI (TBD)
+    """
+    
     # Convert frame indices to time
-    times = librosa.frames_to_time(np.arange(rms.shape[1]), sr=sr, hop_length=hop_samples)
+    times = librosa.frames_to_time(np.arange(self.rms_array.shape[1]), sr=sr, hop_length=hop_samples)
+    if self.rms_array is None:
+      self.get_energy_levels_over_time()
+    
+    # Normalize RMS for color mapping
+    self.norm = mcolors.Normalize(vmin=0, vmax=1.0)
+    
+    # colour map
+    cmap = cm.autumn
+    
+    # Plot
+    if display == 'window':
+      fig, ax = plt.subplots(figsize=(10, 4))
+      ax.set_ylim(0., 0.4)
+      for i in range(len(times)-1):
+          ax.fill_between(times[i:i+2], 0, rms[0][i], color=cmap(norm(rms[0][i])), edgecolor='none')
+      
+      # Adding a colorbar to indicate the scale of RMS values
+      sm = cm.ScalarMappable(cmap=cmap, norm=norm)
+      sm.set_array([])
+      cbar = plt.colorbar(sm, ax=ax, label='RMS Power')
+      # cbar.ax.set_yticklabels([f"{x-60.0:.0f} dBFS" for x in cbar.get_ticks()])  # Adjust labels to show true dBFS values
+      
+      ax.set_ylabel('Power')
+      ax.set_xlabel('Time')
+      ax.set_title(f'{os.path.basename(file_path)}')
+
+      plt.show(block=False)
+      plt.pause(0.001)
+      
     
 
 
