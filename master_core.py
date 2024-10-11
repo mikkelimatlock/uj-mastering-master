@@ -46,16 +46,16 @@ class AudioFile:
         hop (int, optional): Length of window hop in seconds. Defaults to 2.
     """
     # check if the window and hop are the same as before    
-    if (self.window != window) or (self.hop != hop):
+    if (not hasattr(self, 'window')) or ((self.window != window) or (self.hop != hop)):
       self.window, self.hop = window, hop
       # only calculate if not already calculated
-      if self.rms_array is None:
+      if not hasattr(self, 'rms_array'):
         # window and hop are in seconds
         window_samples = window * self.sr
         hop_samples = hop * self.sr
         
         # Calculate RMS over the rolling windows
-        self.rms_array = librosa.feature.rms(y=y, frame_length=window_samples, hop_length=hop_samples)
+        self.rms_array = librosa.feature.rms(y=self.y, frame_length=window_samples, hop_length=hop_samples)
     
   def plot_energy_levels_over_time(self, display='window'):  
     """_summary_
@@ -65,14 +65,21 @@ class AudioFile:
                                  'window' - display in a pyplot window
                                  'gui' - for directing to the GUI (TBD)
     """
-    
-    # Convert frame indices to time
-    times = librosa.frames_to_time(np.arange(self.rms_array.shape[1]), sr=sr, hop_length=hop_samples)
-    if self.rms_array is None:
+    if not hasattr(self, 'rms_array'):
       self.get_energy_levels_over_time()
+
+    # Convert frame indices to time
+    times = librosa.frames_to_time(np.arange(self.rms_array.shape[1]), sr=self.sr, hop_length=self.hop*self.sr)
+    
     
     # Normalize RMS for color mapping
-    self.norm = mcolors.Normalize(vmin=0, vmax=1.0)
+    # check maximum amplitude to determine mastering headspace
+    if self.max_amplitude > 0.95:
+      norm = mcolors.Normalize(vmin=0, vmax=0.6)
+      maxpower = 0.6
+    else:
+      norm = mcolors.Normalize(vmin=0, vmax=0.3)
+      maxpower = 0.3
     
     # colour map
     cmap = cm.autumn
@@ -80,9 +87,9 @@ class AudioFile:
     # Plot
     if display == 'window':
       fig, ax = plt.subplots(figsize=(10, 4))
-      ax.set_ylim(0., 0.4)
+      ax.set_ylim(0., maxpower)
       for i in range(len(times)-1):
-          ax.fill_between(times[i:i+2], 0, rms[0][i], color=cmap(norm(rms[0][i])), edgecolor='none')
+          ax.fill_between(times[i:i+2], 0, self.rms_array[0][i], color=cmap(norm(self.rms_array[0][i])), edgecolor='none')
       
       # Adding a colorbar to indicate the scale of RMS values
       sm = cm.ScalarMappable(cmap=cmap, norm=norm)
@@ -92,7 +99,7 @@ class AudioFile:
       
       ax.set_ylabel('Power')
       ax.set_xlabel('Time')
-      ax.set_title(f'{os.path.basename(file_path)}')
+      ax.set_title(f'{os.path.basename(self.file_path)}')
 
       plt.show(block=False)
       plt.pause(0.001)
@@ -193,6 +200,8 @@ for file in file_path:
   print(f"Average Amplitude: {avg_amplitude:.2f} dBFS")
   print(f"Average Power: {avg_power:.2f} dBFS")
   print(f"Average Power (STFT): {avg_power_stft:.2f} dBFS")
-  plot_macro_time_power_graph(file)
+  currentsong = AudioFile(file)
+  currentsong.plot_energy_levels_over_time()
+  # plot_macro_time_power_graph(file)
 
 plt.show()
