@@ -166,7 +166,7 @@ def plot_macro_time_power_graph(file_path):
     
     ax.set_ylabel('Power')
     ax.set_xlabel('Time')
-    ax.set_title(f'{os.path.basename(file_path)}')
+    # ax.set_title(f'{os.path.basename(file_path)}')
     # plt.ylabel('Power')
     # plt.xlabel('Time (s)')
     # plt.title(f'{os.path.basename(file_path)}')
@@ -195,7 +195,7 @@ with open('./files.txt', 'r') as f:
 
 for file in file_path:
   max_amplitude, avg_amplitude, avg_power, avg_power_stft = analyze_track_librosa(file)
-  read_mp3_tags(file)
+  # read_mp3_tags(file)
   print(f"Maximum Amplitude: {max_amplitude:.2f} dBFS")
   print(f"Average Amplitude: {avg_amplitude:.2f} dBFS")
   print(f"Average Power: {avg_power:.2f} dBFS")
