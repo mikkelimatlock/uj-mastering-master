@@ -73,8 +73,11 @@ class AudioFile:
     
     
     # Normalize RMS for color mapping
-    # check maximum amplitude to determine mastering headspace
-    if self.max_amplitude > 0.95:
+    # check maximum power to determine mastering headspace:
+    # a -6 dBFS headroom should yield a max power of around 0.25
+    # otherwise could go anywhere, but we take 0.6
+    local_max_power = np.max(self.rms_array)
+    if local_max_power > 0.3:
       norm = mcolors.Normalize(vmin=0, vmax=0.6)
       maxpower = 0.6
     else:
