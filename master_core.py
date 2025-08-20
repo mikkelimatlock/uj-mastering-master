@@ -28,15 +28,28 @@ def read_mp3_tags(file_path):
 class AudioFile:
   def __init__(self, file_path):
     self.file_path = file_path
+    # file name / song name
+    if (audio := try_mp3_tags(self.file_path)) is not None:
+      self.song_name = f"{audio['artist'][0]} - {audio['title'][0]}"
+    else:
+      self.song_name = os.path.basename(self.file_path)
+ 
     self.y, self.sr = librosa.load(file_path)
     # load automatically normalises everything to [-1.0, 1.0]
     # and that's alright
     self.y_mono = librosa.to_mono(self.y)
     self.max_amplitude = np.max(np.abs(self.y_mono))
     self.avg_amplitude = np.mean(np.abs(self.y_mono))
+    self.bpm, _ = librosa.beat.beat_track(y=self.y_mono, sr=self.sr)
   
+  def display_song_name(self):
+    print(self.song_name)
+
   def get_amplitudes(self):
     return self.max_amplitude, self.avg_amplitude
+  
+  def get_bpm(self):
+    return self.bpm
   
   def get_energy_levels_over_time(self, window = 10, hop = 2):
     """_summary_
@@ -197,13 +210,15 @@ with open('./files.txt', 'r') as f:
       file_path.append(line.strip())
 
 for file in file_path:
-  max_amplitude, avg_amplitude, avg_power, avg_power_stft = analyze_track_librosa(file)
-  # read_mp3_tags(file)
-  print(f"Maximum Amplitude: {max_amplitude:.2f} dBFS")
-  print(f"Average Amplitude: {avg_amplitude:.2f} dBFS")
-  print(f"Average Power: {avg_power:.2f} dBFS")
-  print(f"Average Power (STFT): {avg_power_stft:.2f} dBFS")
+  # max_amplitude, avg_amplitude, avg_power, avg_power_stft = analyze_track_librosa(file)
+  # # read_mp3_tags(file)
+  # print(f"Maximum Amplitude: {max_amplitude:.2f} dBFS")
+  # print(f"Average Amplitude: {avg_amplitude:.2f} dBFS")
+  # print(f"Average Power: {avg_power:.2f} dBFS")
+  # print(f"Average Power (STFT): {avg_power_stft:.2f} dBFS")
   currentsong = AudioFile(file)
+  currentsong.display_song_name()
+  print(f"BPM: {currentsong.get_bpm()}")
   currentsong.plot_energy_levels_over_time()
   # plot_macro_time_power_graph(file)
 
