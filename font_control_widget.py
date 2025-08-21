@@ -35,7 +35,7 @@ class FontControlWidget(QWidget):
         self.available_fonts: Dict[str, str] = {}  # display_name -> actual_font_name
         
         # Font size bounds (reasonable range for GUI fonts)
-        self.min_font_size = 8
+        self.min_font_size = 9
         self.max_font_size = 12
         self.default_font_size = 10
         
