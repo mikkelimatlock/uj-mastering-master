@@ -69,6 +69,12 @@ class AudioFile:
         
         # Calculate RMS over the rolling windows
         self.rms_array = librosa.feature.rms(y=self.y, frame_length=window_samples, hop_length=hop_samples)
+  
+  def _get_times(self):
+    """Get time array for RMS data. Internal method for GUI integration."""
+    if not hasattr(self, 'rms_array'):
+      self.get_energy_levels_over_time()
+    return librosa.frames_to_time(np.arange(self.rms_array.shape[1]), sr=self.sr, hop_length=self.hop*self.sr)
     
   def plot_energy_levels_over_time(self, display='window'):  
     """_summary_
@@ -202,24 +208,32 @@ def find_mp3_files(directory):
     return mp3_files
 
 
-# Replace 'path/to/your/audiofile.mp3' with the path to your audio file
-file_path = []
-with open('./files.txt', 'r') as f:
-  for line in f:
-    if line[0] != '#' and line[0] != ';':
-      file_path.append(line.strip())
+if __name__ == '__main__':
+  # Legacy batch processing mode - runs when master_core.py is executed directly
+  # For GUI usage, run main.py instead
+  
+  print("Running legacy batch analysis mode...")
+  print("For the new GUI interface, please run: python main.py")
+  print()
+  
+  # Replace 'path/to/your/audiofile.mp3' with the path to your audio file
+  file_path = []
+  with open('./files.txt', 'r') as f:
+    for line in f:
+      if line[0] != '#' and line[0] != ';':
+        file_path.append(line.strip())
 
-for file in file_path:
-  # max_amplitude, avg_amplitude, avg_power, avg_power_stft = analyze_track_librosa(file)
-  # # read_mp3_tags(file)
-  # print(f"Maximum Amplitude: {max_amplitude:.2f} dBFS")
-  # print(f"Average Amplitude: {avg_amplitude:.2f} dBFS")
-  # print(f"Average Power: {avg_power:.2f} dBFS")
-  # print(f"Average Power (STFT): {avg_power_stft:.2f} dBFS")
-  currentsong = AudioFile(file)
-  currentsong.display_song_name()
-  print(f"BPM: {currentsong.get_bpm()}")
-  currentsong.plot_energy_levels_over_time()
-  # plot_macro_time_power_graph(file)
+  for file in file_path:
+    # max_amplitude, avg_amplitude, avg_power, avg_power_stft = analyze_track_librosa(file)
+    # # read_mp3_tags(file)
+    # print(f"Maximum Amplitude: {max_amplitude:.2f} dBFS")
+    # print(f"Average Amplitude: {avg_amplitude:.2f} dBFS")
+    # print(f"Average Power: {avg_power:.2f} dBFS")
+    # print(f"Average Power (STFT): {avg_power_stft:.2f} dBFS")
+    currentsong = AudioFile(file)
+    currentsong.display_song_name()
+    print(f"BPM: {currentsong.get_bpm()}")
+    currentsong.plot_energy_levels_over_time()
+    # plot_macro_time_power_graph(file)
 
-plt.show()
+  plt.show()
