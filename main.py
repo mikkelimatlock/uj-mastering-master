@@ -3,13 +3,14 @@ import os
 import logging
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QSplitter, QLabel, QListWidget, 
-                            QTextEdit, QListWidgetItem)
+                            QTextEdit, QListWidgetItem, QPushButton, QFileDialog)
 from PyQt5.QtCore import Qt
 
 from audio_visualization_widget import AudioVisualizationWidget
 from analysis_results_manager import AnalysisResultsManager
 from logger_setup import setup_logging, parse_log_args
 from font_manager import initialize_fonts, get_font_manager
+from font_control_widget import FontControlWidget
 
 
 class MainWindow(QMainWindow):
@@ -52,6 +53,18 @@ class MainWindow(QMainWindow):
         """Create the left panel with file list and metadata."""
         panel = QWidget()
         layout = QVBoxLayout(panel)
+        
+        # Open File button
+        self.open_file_button = QPushButton("Open Audio File...")
+        self.open_file_button.clicked.connect(self.open_file_dialog)
+        layout.addWidget(self.open_file_button)
+        
+        # Font control cluster
+        self.font_control = FontControlWidget()
+        self.font_control.fontChanged.connect(self.on_font_changed)
+        self.font_control.fontSizeChanged.connect(self.on_font_size_changed)
+        self.font_control.plotRefreshRequested.connect(self.on_plot_refresh_requested)
+        layout.addWidget(self.font_control)
         
         # File list
         self.file_list_label = QLabel("Analyzed Files:")
@@ -116,6 +129,19 @@ class MainWindow(QMainWindow):
             self.visualization_widget.set_status("No audio files detected in drop")
             self.logger.warning("No supported audio files found in drop")
     
+    def open_file_dialog(self):
+        """Open file dialog to select audio files for analysis."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Audio File",
+            "",  # Default directory (empty = current directory)
+            "Audio Files (*.mp3 *.wav *.flac);;All Files (*)"
+        )
+        
+        if file_path:  # User selected a file (didn't cancel)
+            self.logger.info(f"File selected via dialog: {os.path.basename(file_path)}")
+            self.analysis_manager.analyze_file(file_path)
+    
     def on_analysis_started(self, file_path):
         """Called when analysis starts."""
         filename = os.path.basename(file_path)
@@ -172,6 +198,45 @@ class MainWindow(QMainWindow):
         # Update metadata display
         metadata_text = self.analysis_manager.get_metadata_text(file_path)
         self.metadata_display.setText(metadata_text)
+    
+    def on_font_changed(self, font_name: str, font_type: str):
+        """Called when font selection changes."""
+        self.logger.info(f"Font changed via GUI: {font_name} ({font_type})")
+        # Auto-regenerate current plot with new font
+        self._regenerate_current_plot()
+    
+    def on_font_size_changed(self, font_size: int):
+        """Called when Qt font size changes."""
+        self.logger.info(f"Qt font size changed via GUI: {font_size}pt")
+        # Qt font size doesn't affect matplotlib plots, so no regeneration needed
+    
+    def on_plot_refresh_requested(self):
+        """Called when manual plot refresh is requested."""
+        self.logger.info("Manual plot refresh requested via GUI")
+        self._regenerate_current_plot()
+    
+    def _regenerate_current_plot(self):
+        """Regenerate the current plot with updated font settings."""
+        try:
+            # Get the currently selected file
+            current_item = self.file_list.currentItem()
+            if not current_item:
+                self.logger.debug("No file selected for plot regeneration")
+                return
+            
+            file_path = current_item.data(Qt.UserRole)
+            if not file_path:
+                self.logger.debug("No file path found for current selection")
+                return
+            
+            self.logger.info(f"Regenerating plot for: {os.path.basename(file_path)}")
+            
+            # Re-analyze the file to regenerate plots with new font
+            self.analysis_manager.analyze_file(file_path)
+            
+        except Exception as e:
+            self.logger.error(f"Error regenerating plot: {e}")
+            self.visualization_widget.set_status(f"Error regenerating plot: {e}")
 
 
 if __name__ == '__main__':

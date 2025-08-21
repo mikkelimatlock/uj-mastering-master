@@ -127,7 +127,15 @@ class FontManager:
             
             if fonts_loaded > 0:
                 # Clear matplotlib's font cache to recognize new fonts
-                fm.fontManager._load_fontmanager(try_read_cache=False)
+                try:
+                    # Try the common method for refreshing font cache
+                    if hasattr(fm.fontManager, '_load_fontmanager'):
+                        fm.fontManager._load_fontmanager(try_read_cache=False)
+                    else:
+                        # For newer matplotlib versions, just reinitialize
+                        fm.fontManager.__init__()
+                except Exception as font_cache_error:
+                    self.logger.debug(f"Font cache refresh failed (non-critical): {font_cache_error}")
                 
         except Exception as e:
             self.logger.error(f"Error loading custom fonts: {e}")
@@ -296,6 +304,138 @@ Recommended fonts: {', '.join(self.system_font_fallbacks.get(platform.system(), 
 """
         return instructions
     
+    def get_available_system_fonts(self) -> List[str]:
+        """
+        Get list of available system fonts that are good candidates for selection.
+        
+        Returns:
+            List[str]: List of available system font names
+        """
+        current_system = platform.system()
+        fallback_fonts = self.system_font_fallbacks.get(current_system, 
+                                                       self.system_font_fallbacks['Linux'])
+        
+        # Combine all font categories
+        preferred_fonts = []
+        for category in ['sans-serif', 'serif', 'monospace']:
+            preferred_fonts.extend(fallback_fonts.get(category, []))
+        
+        # Get actually available fonts on the system
+        available_fonts = set(fm.get_font_names())
+        
+        # Filter to only fonts that are actually available
+        system_candidates = []
+        for font_name in preferred_fonts:
+            if font_name in available_fonts:
+                system_candidates.append(font_name)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_candidates = []
+        for font in system_candidates:
+            if font not in seen:
+                seen.add(font)
+                unique_candidates.append(font)
+        
+        return unique_candidates
+    
+    def get_default_system_font_name(self) -> str:
+        """
+        Get the name of the default system font for display purposes.
+        
+        Returns:
+            str: Human-readable name of the default system font
+        """
+        from PyQt5.QtGui import QFont
+        from PyQt5.QtCore import QCoreApplication
+        
+        # Try to get the actual default font name from Qt
+        app = QCoreApplication.instance()
+        if app:
+            default_font = QFont()
+            return default_font.family()
+        
+        # Fallback to platform-specific defaults
+        current_system = platform.system()
+        if current_system == 'Windows':
+            return 'Segoe UI'
+        elif current_system == 'Darwin':
+            return 'SF Pro Display'
+        else:
+            return 'DejaVu Sans'
+    
+    def select_startup_font(self) -> tuple[str, str]:
+        """
+        Select the appropriate font for application startup.
+        Priority: First custom font alphabetically, then first system font, then default.
+        
+        Returns:
+            tuple: (font_name, font_type) where font_type is 'custom', 'system', or 'default'
+        """
+        # Check for custom fonts first
+        if self.loaded_fonts:
+            custom_font_names = sorted(self.loaded_fonts.keys())
+            selected_font = custom_font_names[0]
+            self.logger.info(f"Startup font selected (custom): {selected_font}")
+            return selected_font, 'custom'
+        
+        # Check for system fonts
+        system_fonts = self.get_available_system_fonts()
+        if system_fonts:
+            selected_font = system_fonts[0]
+            self.logger.info(f"Startup font selected (system): {selected_font}")
+            return selected_font, 'system'
+        
+        # Default fallback
+        default_font = self.get_default_system_font_name()
+        self.logger.info(f"Startup font selected (default): {default_font}")
+        return default_font, 'default'
+    
+    def apply_font_selection(self, font_name: str, font_type: str) -> bool:
+        """
+        Apply a font selection to both matplotlib and Qt.
+        
+        Args:
+            font_name: Name of the font to apply
+            font_type: Type of font ('custom', 'system', or 'default')
+            
+        Returns:
+            bool: True if successful
+        """
+        try:
+            if font_type == 'default':
+                # Reset to default configuration
+                self._configure_matplotlib()
+                self._configure_qt()
+            else:
+                # Apply specific font
+                self._set_specific_font(font_name)
+            
+            self.logger.info(f"Font applied successfully: {font_name} ({font_type})")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error applying font selection: {e}")
+            return False
+    
+    def _set_specific_font(self, font_name: str):
+        """Set a specific font for both matplotlib and Qt."""
+        from PyQt5.QtCore import QCoreApplication
+        from PyQt5.QtGui import QFont
+        
+        # Update Qt font
+        app = QCoreApplication.instance()
+        if app:
+            font = QFont(font_name)
+            app.setFont(font)
+        
+        # Update matplotlib font (insert at front of font list)
+        current_fonts = plt.rcParams['font.sans-serif'].copy()
+        if font_name in current_fonts:
+            current_fonts.remove(font_name)
+        current_fonts.insert(0, font_name)
+        plt.rcParams['font.sans-serif'] = current_fonts
+    
     def get_status_report(self) -> Dict[str, Any]:
         """
         Generate a status report of the font system.
@@ -303,11 +443,17 @@ Recommended fonts: {', '.join(self.system_font_fallbacks.get(platform.system(), 
         Returns:
             dict: Status information
         """
+        startup_font, startup_type = self.select_startup_font()
+        
         return {
             'matplotlib_configured': self._matplotlib_configured,
             'qt_configured': self._qt_configured,
             'custom_fonts_loaded': len(self.loaded_fonts),
             'custom_font_families': list(self.loaded_fonts.keys()),
+            'available_system_fonts': self.get_available_system_fonts(),
+            'default_system_font': self.get_default_system_font_name(),
+            'startup_font': startup_font,
+            'startup_font_type': startup_type,
             'fonts_directory_exists': self.fonts_dir.exists(),
             'fonts_directory_path': str(self.fonts_dir.absolute()),
             'current_matplotlib_fonts': plt.rcParams.get('font.sans-serif', [])[:5],
