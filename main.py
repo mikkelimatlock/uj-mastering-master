@@ -1,5 +1,6 @@
 import sys
 import os
+import logging
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QSplitter, QLabel, QListWidget, 
                             QTextEdit, QListWidgetItem)
@@ -7,6 +8,8 @@ from PyQt5.QtCore import Qt
 
 from audio_visualization_widget import AudioVisualizationWidget
 from analysis_results_manager import AnalysisResultsManager
+from logger_setup import setup_logging, parse_log_args
+from font_manager import initialize_fonts, get_font_manager
 
 
 class MainWindow(QMainWindow):
@@ -14,6 +17,7 @@ class MainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
+        self.logger = logging.getLogger(__name__)
         self.analysis_manager = AnalysisResultsManager()
         self.initUI()
         self.connect_signals()
@@ -81,6 +85,7 @@ class MainWindow(QMainWindow):
         self.analysis_manager.analysisStarted.connect(self.on_analysis_started)
         self.analysis_manager.analysisCompleted.connect(self.on_analysis_completed)
         self.analysis_manager.analysisError.connect(self.on_analysis_error)
+        self.analysis_manager.progressUpdate.connect(self.on_progress_update)
     
     def dragEnterEvent(self, event):
         """Handle drag enter event for file drops."""
@@ -99,13 +104,17 @@ class MainWindow(QMainWindow):
         files = [u.toLocalFile() for u in event.mimeData().urls()]
         audio_files = [f for f in files if f.lower().endswith(('.mp3', '.wav', '.flac'))]
         
+        self.logger.info(f"Files dropped: {len(files)} total, {len(audio_files)} audio files")
+        
         if audio_files:
             # Analyze the first audio file
             # TODO: Add support for multiple file queue
             file_path = audio_files[0]
+            self.logger.info(f"Starting analysis of dropped file: {os.path.basename(file_path)}")
             self.analysis_manager.analyze_file(file_path)
         else:
             self.visualization_widget.set_status("No audio files detected in drop")
+            self.logger.warning("No supported audio files found in drop")
     
     def on_analysis_started(self, file_path):
         """Called when analysis starts."""
@@ -143,7 +152,13 @@ class MainWindow(QMainWindow):
     def on_analysis_error(self, file_path, error_message):
         """Called when analysis fails."""
         filename = os.path.basename(file_path)
+        self.logger.error(f"Analysis failed for {filename}: {error_message}")
         self.visualization_widget.set_status(f"Error analyzing {filename}: {error_message}")
+    
+    def on_progress_update(self, message, percentage):
+        """Called when analysis progress updates."""
+        self.logger.debug(f"Progress: {message} ({percentage}%)")
+        self.visualization_widget.set_status(f"{message} ({percentage}%)")
     
     def on_file_selected(self, item):
         """Called when a file is selected from the list."""
@@ -160,12 +175,34 @@ class MainWindow(QMainWindow):
 
 
 if __name__ == '__main__':
+    # Parse logging arguments before creating QApplication
+    log_level, log_to_file = parse_log_args()
+    
+    # Initialize logging
+    logger = setup_logging(log_level, log_to_file)
+    logger.info("Starting Audio Mastering Analysis Toolkit")
+    logger.info(f"Command line args: log-level={log_level}, log-file={log_to_file}")
+    
     app = QApplication(sys.argv)
+    
+    # Initialize font system before creating any widgets
+    font_success = initialize_fonts()
+    if font_success:
+        logger.info("Font system initialized successfully")
+        # Log font status for debugging
+        font_status = get_font_manager().get_status_report()
+        logger.debug(f"Font status: matplotlib={font_status['matplotlib_configured']}, "
+                    f"qt={font_status['qt_configured']}, "
+                    f"custom_fonts={font_status['custom_fonts_loaded']}")
+    else:
+        logger.warning("Font system initialization failed - CJK characters may not display properly")
     
     # Set application style
     app.setStyle('Fusion')  # Modern cross-platform style
+    logger.debug("Application style set to Fusion")
     
     window = MainWindow()
     window.show()
+    logger.info("GUI window displayed")
     
     sys.exit(app.exec_())

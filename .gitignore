@@ -1,1 +1,24 @@
 files.txt
+
+# Font directory - avoid licensing issues by not committing font files
+# Keep the directory structure but ignore actual font files
+fonts/*.ttf
+fonts/*.otf
+fonts/*.ttc
+# But preserve the placeholder file
+!fonts/PLACE_YOUR_FONT_FILES_HERE
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db

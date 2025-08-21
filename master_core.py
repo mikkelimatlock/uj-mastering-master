@@ -8,6 +8,7 @@ import matplotlib.cm as cm
 
 from mutagen.mp3 import MP3
 from mutagen.easyid3 import EasyID3
+from font_manager import safe_title, initialize_fonts
 
 def try_mp3_tags(file_path):
   try:
@@ -20,19 +21,19 @@ def try_mp3_tags(file_path):
 
 def read_mp3_tags(file_path):
   if (audio := try_mp3_tags(file_path)) is not None:
-    print(f"File name: {os.path.basename(file_path)}")
-    print(f"{audio['artist'][0]} - {audio['title'][0]}")
+    print(f"File name: {safe_title(os.path.basename(file_path))}")
+    print(f"{safe_title(audio['artist'][0])} - {safe_title(audio['title'][0])}")
   else:
-    print(f"File name: {os.path.basename(file_path)}")
+    print(f"File name: {safe_title(os.path.basename(file_path))}")
     
 class AudioFile:
   def __init__(self, file_path):
     self.file_path = file_path
     # file name / song name
     if (audio := try_mp3_tags(self.file_path)) is not None:
-      self.song_name = f"{audio['artist'][0]} - {audio['title'][0]}"
+      self.song_name = safe_title(f"{audio['artist'][0]} - {audio['title'][0]}")
     else:
-      self.song_name = os.path.basename(self.file_path)
+      self.song_name = safe_title(os.path.basename(self.file_path))
  
     self.y, self.sr = librosa.load(file_path)
     # load automatically normalises everything to [-1.0, 1.0]
@@ -49,7 +50,10 @@ class AudioFile:
     return self.max_amplitude, self.avg_amplitude
   
   def get_bpm(self):
-    return self.bpm
+    # librosa.beat.beat_track returns numpy array - extract scalar value
+    if isinstance(self.bpm, np.ndarray):
+      return float(self.bpm[0]) if len(self.bpm) > 0 else 0.0
+    return float(self.bpm)
   
   def get_energy_levels_over_time(self, window = 10, hop = 2):
     """_summary_
@@ -121,7 +125,7 @@ class AudioFile:
       
       ax.set_ylabel('Power')
       ax.set_xlabel('Time')
-      ax.set_title(f'{os.path.basename(self.file_path)}')
+      ax.set_title(safe_title(os.path.basename(self.file_path)))
 
       plt.show(block=False)
       plt.pause(0.001)
@@ -215,6 +219,9 @@ if __name__ == '__main__':
   print("Running legacy batch analysis mode...")
   print("For the new GUI interface, please run: python main.py")
   print()
+  
+  # Initialize fonts for matplotlib
+  initialize_fonts()
   
   # Replace 'path/to/your/audiofile.mp3' with the path to your audio file
   file_path = []

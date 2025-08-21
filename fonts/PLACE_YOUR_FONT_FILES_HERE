@@ -1,0 +1,12 @@
+This directory is for custom CJK fonts to improve character rendering.
+
+Supported formats: .ttf, .otf, .ttc
+
+Recommended free fonts for CJK support:
+- Noto Sans CJK (Google Fonts)
+- Source Han Sans (Adobe)
+
+The application will automatically detect and use fonts placed here.
+For setup instructions, run: python setup_fonts.py
+
+Note: Only add fonts you have proper licensing rights to distribute.

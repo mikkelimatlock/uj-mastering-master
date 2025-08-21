@@ -9,6 +9,7 @@ import matplotlib.colors as mcolors
 import matplotlib.cm as cm
 from matplotlib.figure import Figure
 import os
+from font_manager import safe_title
 
 
 class PlottingEngine:
@@ -58,7 +59,7 @@ class PlottingEngine:
         # Labels and title
         ax.set_ylabel('Power')
         ax.set_xlabel('Time (seconds)')
-        ax.set_title(f'{os.path.basename(file_path)}')
+        ax.set_title(safe_title(os.path.basename(file_path)))
         
         # Tight layout for better appearance in GUI
         fig.tight_layout()
@@ -73,7 +74,7 @@ class PlottingEngine:
         Returns:
             str: Formatted metadata text
         """
-        return f"""Track: {song_name}
+        return f"""Track: {safe_title(song_name)}
 BPM: {bpm:.1f}
 Max Amplitude: {max_amplitude:.3f}
 Avg Amplitude: {avg_amplitude:.3f}"""

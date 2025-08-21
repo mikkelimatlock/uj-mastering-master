@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "WebFetch(domain:docs.anthropic.com)",
+      "Bash(cat:*)",
+      "Bash(lsb_release:*)",
+      "Bash(find:*)",
+      "Bash(python:*)",
+      "Bash(git add:*)",
+      "Bash(git push:*)",
+      "WebFetch(domain:docs.github.com)",
+      "WebFetch(domain:docs.github.com)",
+      "Bash(ssh:*)",
+      "Bash(rm:*)"
+    ],
+    "deny": [],
+    "ask": [],
+    "defaultMode": "acceptEdits"
+  },
+  "outputStyle": "haruki"
+}
