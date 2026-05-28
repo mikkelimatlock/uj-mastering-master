@@ -43,9 +43,8 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 - Auto-regeneration of plots when fonts change
 
 #### `master_core.py`
-- Core audio analysis functionality
-- `AudioFile` class with comprehensive metrics extraction
-- RMS power analysis and BPM detection
+- Defines the `AudioFile` class: librosa loading, rolling RMS power, BPM detection
+- No batch / CLI mode — all analysis is driven from `main.py` via `AnalysisResultsManager`
 
 ### Current analysis features
 - **RMS power analysis**: 10-second rolling window with 2-second hops
@@ -146,16 +145,21 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 
 ## Usage
 
-### Current usage
-1. Run `python main.py` to launch the GUI application
-2. Use "Open Audio File..." button or drag-and-drop audio files for analysis
-3. Adjust font settings using the Font Settings panel
-4. View real-time analysis results with embedded matplotlib plots
-5. Select different analyzed files from the file list to compare results
+### Running the app
+```bash
+uv sync          # one-time, after cloning
+uv run ujm       # launch the GUI
+```
 
-### Legacy usage (batch Mode)
-1. Add audio file paths to `files.txt`
-2. Run `python master_core.py` for batch analysis
+Optional flags (handled by `logger_setup.parse_log_args`):
+```bash
+uv run ujm --log-level DEBUG    # ERROR | WARN | INFO | DEBUG | TRACE
+uv run ujm --log-file            # also write audio_analysis.log
+```
+
+The only entry point is `ujm` (defined in `pyproject.toml` as
+`ujm = "main:main"`). The previous `files.txt` batch mode and the
+`python master_core.py` workflow have been removed.
 
 ### Planned usage enhancements
 1. Interactive plot manipulation and style customization

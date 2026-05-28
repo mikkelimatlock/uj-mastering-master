@@ -68,7 +68,7 @@ class AudioAnalysisWorker(QThread):
                 bpm=audio_file.get_bpm(),
                 max_amplitude=audio_file.max_amplitude,
                 avg_amplitude=audio_file.avg_amplitude,
-                times=audio_file._get_times(),
+                times=audio_file.get_times(),
                 rms_array=audio_file.rms_array,
                 analysis_successful=True
             )

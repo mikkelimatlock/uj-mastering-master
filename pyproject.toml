@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "uj-mastering-master"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "librosa",
+    "numpy",
+    "matplotlib",
+    "mutagen",
+    "PyQt5>=5.15.10",
+    # 5.15.2 is the only pyqt5-qt5 release with a Windows wheel; later
+    # versions are Linux/macOS only.
+    "PyQt5-Qt5==5.15.2 ; sys_platform == 'win32'",
+]
+
+[project.scripts]
+ujm = "main:main"
+
+[tool.setuptools]
+py-modules = [
+    "main",
+    "analysis_results_manager",
+    "audio_visualization_widget",
+    "master_core",
+    "plotting_engine",
+    "font_manager",
+    "font_control_widget",
+    "logger_setup",
+    "setup_fonts",
+]

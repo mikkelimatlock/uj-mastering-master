@@ -239,17 +239,17 @@ class MainWindow(QMainWindow):
             self.visualization_widget.set_status(f"Error regenerating plot: {e}")
 
 
-if __name__ == '__main__':
+def main():
     # Parse logging arguments before creating QApplication
     log_level, log_to_file = parse_log_args()
-    
+
     # Initialize logging
     logger = setup_logging(log_level, log_to_file)
     logger.info("Starting Audio Mastering Analysis Toolkit")
     logger.info(f"Command line args: log-level={log_level}, log-file={log_to_file}")
-    
+
     app = QApplication(sys.argv)
-    
+
     # Initialize font system before creating any widgets
     font_success = initialize_fonts()
     if font_success:
@@ -261,13 +261,17 @@ if __name__ == '__main__':
                     f"custom_fonts={font_status['custom_fonts_loaded']}")
     else:
         logger.warning("Font system initialization failed - CJK characters may not display properly")
-    
+
     # Set application style
     app.setStyle('Fusion')  # Modern cross-platform style
     logger.debug("Application style set to Fusion")
-    
+
     window = MainWindow()
     window.show()
     logger.info("GUI window displayed")
-    
+
     sys.exit(app.exec_())
+
+
+if __name__ == '__main__':
+    main()

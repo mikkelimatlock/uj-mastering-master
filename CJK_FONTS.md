@@ -43,7 +43,7 @@ The font system is integrated at these key locations:
 font_success = initialize_fonts()
 ```
 
-#### Plot Titles (`plotting_engine.py`, `master_core.py`)
+#### Plot Titles (`plotting_engine.py`)
 ```python
 ax.set_title(safe_title(os.path.basename(file_path)))
 ```
@@ -59,7 +59,7 @@ song_name = safe_title(f"{audio['artist'][0]} - {audio['title'][0]}")
 
 1. **Run the setup utility:**
 ```bash
-python setup_fonts.py
+uv run python setup_fonts.py
 ```
 
 2. **For enhanced CJK support, add fonts to the `fonts/` directory:**
@@ -163,7 +163,7 @@ print(status)
 
 ### Test CJK Characters
 ```bash
-python setup_fonts.py
+uv run python setup_fonts.py
 ```
 
 ### Logging
@@ -202,13 +202,13 @@ Font system operations are logged at appropriate levels:
 ### Debug Commands
 ```bash
 # Check font system status
-python setup_fonts.py
+uv run python setup_fonts.py
 
 # Test with specific log level
-python main.py --log-level DEBUG
+uv run ujm --log-level DEBUG
 
 # Test matplotlib font configuration
-python -c "import matplotlib.pyplot as plt; print(plt.rcParams['font.sans-serif'])"
+uv run python -c "import matplotlib.pyplot as plt; print(plt.rcParams['font.sans-serif'])"
 ```
 
 ## Conclusion
