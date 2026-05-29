@@ -11,6 +11,7 @@ dependencies = [
     "numpy",
     "matplotlib",
     "mutagen",
+    "pyloudnorm",
     "PyQt5>=5.15.10",
     # 5.15.2 is the only pyqt5-qt5 release with a Windows wheel; later
     # versions are Linux/macOS only.
@@ -26,9 +27,10 @@ py-modules = [
     "analysis_results_manager",
     "audio_visualization_widget",
     "master_core",
-    "plotting_engine",
+    "metrics",
     "font_manager",
     "font_control_widget",
+    "plot_control_widget",
     "logger_setup",
     "setup_fonts",
 ]

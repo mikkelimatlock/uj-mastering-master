@@ -15,7 +15,7 @@ Developed with Claude Code assistance.
 
 ### Roadmap
 See [CLAUDE.md](CLAUDE.md) for the full development roadmap. Near-term:
-plot-control widget cluster, LUFS, dynamic range, interactive axis controls.
+dynamic range, plot-style controls, interactive axis controls.
 
 ## Quick start
 
@@ -40,19 +40,27 @@ selector. The directory is gitignored to avoid bundling licensed font data.
 See [CJK_FONTS.md](CJK_FONTS.md) for details.
 
 ## Dependencies
-`librosa`, `numpy`, `matplotlib`, `mutagen`, `PyQt5` — all pinned through
-`uv.lock`. Python 3.10+.
+`librosa`, `numpy`, `matplotlib`, `mutagen`, `pyloudnorm`, `PyQt5` — all pinned
+through `uv.lock`. Python 3.10+.
 
 ## Architecture
 
 | Module | Responsibility |
 | --- | --- |
 | `main.py` | `MainWindow` + the `ujm` entry point |
-| `analysis_results_manager.py` | Background `QThread` worker, result cache |
+| `analysis_results_manager.py` | Background `QThread` worker, result + metric-data cache |
 | `master_core.py` | `AudioFile`: librosa loading, RMS rolling window, BPM |
-| `plotting_engine.py` | Matplotlib `Figure` builder for the power graph |
+| `metrics.py` | Pluggable `Metric` ABC + registry (RMS Power, Waveform, …) |
 | `audio_visualization_widget.py` | Embedded `FigureCanvasQTAgg` host |
 | `font_manager.py` | Custom + system CJK font discovery, matplotlib/Qt config |
-| `font_control_widget.py` | Font picker, size slider, refresh-plot button |
+| `font_control_widget.py` | Font picker + size slider |
+| `plot_control_widget.py` | Metric selector + refresh-plot button |
 | `logger_setup.py` | CLI log-level parsing + custom TRACE level |
 | `setup_fonts.py` | Diagnostic utility (run standalone) |
+
+### Adding a metric
+
+Subclass `Metric` in `metrics.py`, implement `compute(audio_file) -> data` (the
+heavy part, runs on the worker thread) and `render(data, file_path) -> Figure`
+(cheap, runs on the GUI thread). Register the instance in the `METRICS` dict at
+the bottom of the file — it shows up in the dropdown automatically.

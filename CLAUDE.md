@@ -6,7 +6,7 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 
 ### Core features
 - **Audio Analysis**: Uses librosa to analyze audio files (MP3/WAV/FLAC support)
-- **Power Visualization**: Generates colorized power magnitude graphs over time
+- **Pluggable Metrics**: Switchable visualizations (RMS Power, Waveform, LUFS; DR next) via a `Metric` ABC
 - **Metadata Extraction**: Reads ID3 tags from MP3 files for better file identification
 - **Modular GUI Architecture**: Complete PyQt5 interface with drag-and-drop and file dialog support
 - **Font Management**: Comprehensive CJK-compatible font system with user-provided font support
@@ -29,7 +29,8 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 
 #### `analysis_results_manager.py`
 - Background threading for audio analysis
-- Results caching and management
+- Caches both the loaded `AudioFile` and per-metric `compute()` output, so
+  metric/font switches re-render from cache without reloading librosa
 - Progress tracking and error handling
 
 #### `audio_visualization_widget.py`
@@ -40,7 +41,18 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 - Unified font control system with clustered interface
 - Auto-detection of custom fonts from `fonts/` directory
 - System font discovery and CJK compatibility
-- Auto-regeneration of plots when fonts change
+- Font changes trigger a cheap re-render of the cached metric data
+
+#### `plot_control_widget.py`
+- Metric selector dropdown driven by the `metrics.METRICS` registry
+- Houses the `Refresh Plot` button (foundation for upcoming style controls)
+
+#### `metrics.py`
+- Pluggable `Metric` ABC: `compute(audio_file) -> data` (heavy, worker thread)
+  and `render(data, file_path) -> Figure` (cheap, GUI thread)
+- Current registry: `RMSPowerMetric`, `WaveformMetric`, `LUFSMetric`
+  (BS.1770 short-term + integrated, via pyloudnorm) — drop in new ones (DR,
+  spectrum) by appending an instance to `METRICS`
 
 #### `master_core.py`
 - Defines the `AudioFile` class: librosa loading, rolling RMS power, BPM detection
@@ -57,22 +69,20 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 
 ### GUI features
 - **File management**: Drag-and-drop and file dialog for audio selection
-- **Font control**: Unified font selector with size control and plot regeneration
+- **Font control**: Unified font selector with size control
+- **Plot control**: Metric selector + refresh-plot button
 - **Analysis display**: Real-time visualization with metadata panels
 - **Modular architecture**: Self-contained widgets for easy layout management
 
 ## Future development plans
 
 ### Short-term (urgent)
-1. **Plot control widget cluster**
-   - Move 'Refresh Plot' into dedicated plot/graph widget cluster
-   - Add metric selection widget (choose which analysis to display)
-   - Implement plot style controller (colormap, line vs bar, etc.)
-   - Prepare foundation for mastering comparison features
+1. **Plot control widget cluster** *(metric selector + Refresh Plot done; still TODO)*
+   - Plot style controller (colormap, line vs bar, etc.)
+   - Foundation for mastering comparison features
 
 ### Short-term (not urgent)
-1. **Enhanced metrics**
-   - LUFS loudness measurement implementation
+1. **Enhanced metrics** *(plug new ones into `metrics.METRICS`)*
    - Dynamic range measurement (DR meter)
    - Peak-to-average ratio analysis
    - Frequency spectrum analysis

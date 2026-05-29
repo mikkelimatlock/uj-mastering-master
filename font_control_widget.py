@@ -5,8 +5,8 @@ Self-contained widget for easy layout management.
 
 import logging
 from typing import List, Dict, Optional
-from PyQt5.QtWidgets import (QWidget, QComboBox, QVBoxLayout, QHBoxLayout, 
-                            QLabel, QSlider, QPushButton, QGroupBox)
+from PyQt5.QtWidgets import (QWidget, QComboBox, QVBoxLayout, QHBoxLayout,
+                            QLabel, QSlider, QGroupBox)
 from PyQt5.QtCore import pyqtSignal, Qt
 
 from font_manager import get_font_manager
@@ -19,13 +19,11 @@ class FontControlWidget(QWidget):
     Provides clustered interface for:
     - Font selection (unified for Qt and matplotlib)
     - Qt font size adjustment
-    - Plot regeneration controls
     """
-    
+
     # Signals
     fontChanged = pyqtSignal(str, str)  # (font_name, font_type)
     fontSizeChanged = pyqtSignal(int)   # font_size
-    plotRefreshRequested = pyqtSignal() # manual refresh request
     
     def __init__(self, parent=None):
         """Initialize the font control widget."""
@@ -59,11 +57,7 @@ class FontControlWidget(QWidget):
         # Font size section
         size_section = self._create_font_size_section()
         group_layout.addWidget(size_section)
-        
-        # Control buttons section
-        button_section = self._create_button_section()
-        group_layout.addWidget(button_section)
-        
+
         layout.addWidget(group_box)
         
     def _create_font_selector_section(self) -> QWidget:
@@ -116,20 +110,6 @@ class FontControlWidget(QWidget):
         slider_layout.addWidget(max_label)
         
         layout.addLayout(slider_layout)
-        
-        return section
-    
-    def _create_button_section(self) -> QWidget:
-        """Create the control buttons section."""
-        section = QWidget()
-        layout = QHBoxLayout(section)
-        layout.setContentsMargins(0, 0, 0, 0)
-        
-        # Refresh plot button
-        self.refresh_button = QPushButton("Refresh Plot")
-        self.refresh_button.setToolTip("Regenerate current plot with new font settings")
-        self.refresh_button.clicked.connect(self.on_refresh_plot_clicked)
-        layout.addWidget(self.refresh_button)
         
         return section
     
@@ -242,11 +222,6 @@ class FontControlWidget(QWidget):
         
         # Emit signal for external listeners
         self.fontSizeChanged.emit(size)
-    
-    def on_refresh_plot_clicked(self):
-        """Handle manual plot refresh button click."""
-        self.logger.info("Manual plot refresh requested")
-        self.plotRefreshRequested.emit()
     
     def _apply_font_change(self, font_name: str, font_type: str):
         """Apply the font change to both Qt and matplotlib."""

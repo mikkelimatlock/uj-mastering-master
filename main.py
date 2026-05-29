@@ -11,6 +11,7 @@ from analysis_results_manager import AnalysisResultsManager
 from logger_setup import setup_logging, parse_log_args
 from font_manager import initialize_fonts, get_font_manager
 from font_control_widget import FontControlWidget
+from plot_control_widget import PlotControlWidget
 
 
 class MainWindow(QMainWindow):
@@ -63,8 +64,13 @@ class MainWindow(QMainWindow):
         self.font_control = FontControlWidget()
         self.font_control.fontChanged.connect(self.on_font_changed)
         self.font_control.fontSizeChanged.connect(self.on_font_size_changed)
-        self.font_control.plotRefreshRequested.connect(self.on_plot_refresh_requested)
         layout.addWidget(self.font_control)
+
+        # Plot control cluster (metric selector + refresh)
+        self.plot_control = PlotControlWidget()
+        self.plot_control.metricChanged.connect(self.on_metric_changed)
+        self.plot_control.plotRefreshRequested.connect(self.on_plot_refresh_requested)
+        layout.addWidget(self.plot_control)
         
         # File list
         self.file_list_label = QLabel("Analyzed Files:")
@@ -99,6 +105,9 @@ class MainWindow(QMainWindow):
         self.analysis_manager.analysisCompleted.connect(self.on_analysis_completed)
         self.analysis_manager.analysisError.connect(self.on_analysis_error)
         self.analysis_manager.progressUpdate.connect(self.on_progress_update)
+        self.analysis_manager.metricComputeStarted.connect(self.on_metric_compute_started)
+        self.analysis_manager.metricReady.connect(self.on_metric_ready)
+        self.analysis_manager.metricComputeError.connect(self.on_metric_compute_error)
     
     def dragEnterEvent(self, event):
         """Handle drag enter event for file drops."""
@@ -124,7 +133,7 @@ class MainWindow(QMainWindow):
             # TODO: Add support for multiple file queue
             file_path = audio_files[0]
             self.logger.info(f"Starting analysis of dropped file: {os.path.basename(file_path)}")
-            self.analysis_manager.analyze_file(file_path)
+            self.analysis_manager.analyze_file(file_path, self.plot_control.current_metric_id())
         else:
             self.visualization_widget.set_status("No audio files detected in drop")
             self.logger.warning("No supported audio files found in drop")
@@ -140,7 +149,7 @@ class MainWindow(QMainWindow):
         
         if file_path:  # User selected a file (didn't cancel)
             self.logger.info(f"File selected via dialog: {os.path.basename(file_path)}")
-            self.analysis_manager.analyze_file(file_path)
+            self.analysis_manager.analyze_file(file_path, self.plot_control.current_metric_id())
     
     def on_analysis_started(self, file_path):
         """Called when analysis starts."""
@@ -150,30 +159,28 @@ class MainWindow(QMainWindow):
     def on_analysis_completed(self, file_path, result):
         """Called when analysis completes successfully."""
         filename = os.path.basename(file_path)
-        
+
         # Add to file list if not already there
-        existing_items = [self.file_list.item(i).text() 
+        existing_items = [self.file_list.item(i).text()
                          for i in range(self.file_list.count())]
         if filename not in existing_items:
             item = QListWidgetItem(filename)
             item.setData(Qt.UserRole, file_path)  # Store full path
             self.file_list.addItem(item)
-        
-        # Get and display the analysis figure
-        figure = self.analysis_manager.get_analysis_figure(file_path)
-        if figure:
-            self.visualization_widget.display_figure_direct(figure)
-        
+
         # Update metadata display
         metadata_text = self.analysis_manager.get_metadata_text(file_path)
         self.metadata_display.setText(metadata_text)
-        
+
         # Select the analyzed file in the list
         for i in range(self.file_list.count()):
             item = self.file_list.item(i)
             if item.data(Qt.UserRole) == file_path:
                 self.file_list.setCurrentItem(item)
                 break
+
+        # Render the currently-selected metric (cached, or async-compute it)
+        self._render_or_request(file_path)
     
     def on_analysis_error(self, file_path, error_message):
         """Called when analysis fails."""
@@ -189,54 +196,82 @@ class MainWindow(QMainWindow):
     def on_file_selected(self, item):
         """Called when a file is selected from the list."""
         file_path = item.data(Qt.UserRole)
-        
-        # Display the analysis figure
-        figure = self.analysis_manager.get_analysis_figure(file_path)
-        if figure:
-            self.visualization_widget.display_figure_direct(figure)
-        
+
         # Update metadata display
         metadata_text = self.analysis_manager.get_metadata_text(file_path)
         self.metadata_display.setText(metadata_text)
+
+        # Render the currently-selected metric (cached, or async-compute it)
+        self._render_or_request(file_path)
     
     def on_font_changed(self, font_name: str, font_type: str):
         """Called when font selection changes."""
         self.logger.info(f"Font changed via GUI: {font_name} ({font_type})")
-        # Auto-regenerate current plot with new font
-        self._regenerate_current_plot()
-    
+        # Cheap re-render — cached metric data, redraws under the new font.
+        self._render_or_request(self._current_file_path())
+
     def on_font_size_changed(self, font_size: int):
         """Called when Qt font size changes."""
         self.logger.info(f"Qt font size changed via GUI: {font_size}pt")
         # Qt font size doesn't affect matplotlib plots, so no regeneration needed
-    
+
+    def on_metric_changed(self, metric_id: str):
+        """Called when the metric selector changes."""
+        self.logger.info(f"Metric changed via GUI: {metric_id}")
+        self._render_or_request(self._current_file_path())
+
     def on_plot_refresh_requested(self):
         """Called when manual plot refresh is requested."""
         self.logger.info("Manual plot refresh requested via GUI")
-        self._regenerate_current_plot()
-    
-    def _regenerate_current_plot(self):
-        """Regenerate the current plot with updated font settings."""
-        try:
-            # Get the currently selected file
-            current_item = self.file_list.currentItem()
-            if not current_item:
-                self.logger.debug("No file selected for plot regeneration")
-                return
-            
-            file_path = current_item.data(Qt.UserRole)
-            if not file_path:
-                self.logger.debug("No file path found for current selection")
-                return
-            
-            self.logger.info(f"Regenerating plot for: {os.path.basename(file_path)}")
-            
-            # Re-analyze the file to regenerate plots with new font
-            self.analysis_manager.analyze_file(file_path)
-            
-        except Exception as e:
-            self.logger.error(f"Error regenerating plot: {e}")
-            self.visualization_widget.set_status(f"Error regenerating plot: {e}")
+        self._render_or_request(self._current_file_path())
+
+    def on_metric_compute_started(self, file_path: str, metric_id: str):
+        """Called when an off-thread metric compute starts."""
+        if file_path != self._current_file_path():
+            return  # selection moved on; status bar shouldn't lie
+        from metrics import METRICS
+        metric = METRICS.get(metric_id)
+        display = metric.display_name if metric else metric_id
+        self.visualization_widget.set_status(f"Computing {display}...")
+
+    def on_metric_ready(self, file_path: str, metric_id: str):
+        """Called when metric data is available (cached hit or async finish)."""
+        if file_path != self._current_file_path():
+            return  # stale — user moved on
+        if metric_id != self.plot_control.current_metric_id():
+            return  # user already switched to a different metric
+        figure = self.analysis_manager.get_metric_figure(file_path, metric_id)
+        if figure:
+            self.visualization_widget.display_figure_direct(figure)
+
+    def on_metric_compute_error(self, file_path: str, metric_id: str, error_message: str):
+        self.logger.error(f"Metric compute failed ({metric_id} / {os.path.basename(file_path)}): {error_message}")
+        if file_path == self._current_file_path():
+            self.visualization_widget.set_status(f"Error computing {metric_id}: {error_message}")
+
+    def _current_file_path(self):
+        item = self.file_list.currentItem()
+        return item.data(Qt.UserRole) if item else None
+
+    def _render_or_request(self, file_path):
+        """Render the current metric from cache, or kick off async compute if missing.
+
+        Falls back to a full analyse_file if the file hasn't been processed yet
+        (e.g. font change on an empty session — defensive).
+        """
+        if not file_path:
+            return
+        metric_id = self.plot_control.current_metric_id()
+        figure = self.analysis_manager.get_metric_figure(file_path, metric_id)
+        if figure:
+            self.visualization_widget.display_figure_direct(figure)
+            return
+        # Not cached yet — try async compute if the file has been loaded.
+        if self.analysis_manager.is_file_analyzed(file_path):
+            self.analysis_manager.request_metric(file_path, metric_id)
+        else:
+            # No AudioFile yet either; kick off a full analysis with this metric.
+            self.analysis_manager.analyze_file(file_path, metric_id)
 
 
 def main():
