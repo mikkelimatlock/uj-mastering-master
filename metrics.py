@@ -20,6 +20,8 @@ import numpy as np
 import matplotlib.colors as mcolors
 import matplotlib.cm as cm
 from matplotlib.figure import Figure
+from matplotlib.ticker import FuncFormatter, NullFormatter
+import librosa
 import pyloudnorm as pyln
 from scipy import signal as scipy_signal
 
@@ -34,6 +36,38 @@ _EPS = 1e-12
 def _to_dbfs(linear: np.ndarray | float) -> np.ndarray | float:
   """Convert a linear magnitude to dBFS, floored at _EPS."""
   return 20.0 * np.log10(np.maximum(linear, _EPS))
+
+
+def _fmt_tick(v, _pos=None) -> str:
+  """Compact tick label: integer for big/whole values, trimmed decimals else."""
+  av = abs(v)
+  if v == 0 or av >= 100:
+    return f"{v:.0f}"
+  if av >= 1:
+    return f"{v:.1f}".rstrip("0").rstrip(".")
+  return f"{v:.3f}".rstrip("0").rstrip(".")
+
+
+def _show_axis_extents(ax) -> None:
+  """Force the exact min/max of each axis onto the tick list.
+
+  Matplotlib's locators often omit the extreme values — most visibly on a log
+  frequency axis, where the top (e.g. 22050 Hz) falls between decade ticks and
+  goes unlabelled. Union the endpoints into the existing in-range ticks so you
+  can always read where a plot actually starts and stops.
+  """
+  fmt = FuncFormatter(_fmt_tick)
+  for is_log, get_lim, set_lim, get_ticks, set_ticks, mpl_axis in (
+    (ax.get_xscale() == "log", ax.get_xlim, ax.set_xlim, ax.get_xticks, ax.set_xticks, ax.xaxis),
+    (ax.get_yscale() == "log", ax.get_ylim, ax.set_ylim, ax.get_yticks, ax.set_yticks, ax.yaxis),
+  ):
+    lo, hi = get_lim()
+    inside = [t for t in get_ticks() if lo <= t <= hi]
+    mpl_axis.set_major_formatter(fmt)
+    if is_log:
+      mpl_axis.set_minor_formatter(NullFormatter())  # keep minor marks unlabelled
+    set_ticks(sorted(set(inside) | {lo, hi}))
+    set_lim(lo, hi)  # set_ticks can nudge the view; restore exact limits
 
 
 class Metric(ABC):
@@ -93,6 +127,7 @@ class RMSPowerMetric(Metric):
     ax.set_ylabel("Power")
     ax.set_xlabel("Time (seconds)")
     ax.set_title(safe_title(os.path.basename(file_path)))
+    _show_axis_extents(ax)
     fig.tight_layout()
     return fig
 
@@ -137,6 +172,7 @@ class WaveformMetric(Metric):
     ax.set_ylabel("Amplitude")
     ax.set_xlabel("Time (seconds)")
     ax.set_title(safe_title(os.path.basename(file_path)))
+    _show_axis_extents(ax)
     fig.tight_layout()
     return fig
 
@@ -236,6 +272,7 @@ class LUFSMetric(Metric):
     ax.set_title(safe_title(os.path.basename(file_path)))
     ax.grid(True, alpha=0.3)
     ax.legend(loc="lower right", fontsize=8)
+    _show_axis_extents(ax)
     fig.tight_layout()
     return fig
 
@@ -301,6 +338,7 @@ class CrestFactorMetric(Metric):
     ax.set_title(safe_title(os.path.basename(file_path)))
     ax.grid(True, alpha=0.3)
     ax.legend(loc="lower right", fontsize=8)
+    _show_axis_extents(ax)
     fig.tight_layout()
     return fig
 
@@ -373,6 +411,7 @@ class PSRMetric(Metric):
     ax.set_title(safe_title(os.path.basename(file_path)))
     ax.grid(True, alpha=0.3)
     ax.legend(loc="lower right", fontsize=8)
+    _show_axis_extents(ax)
     fig.tight_layout()
     return fig
 
@@ -444,6 +483,77 @@ class TruePeakMetric(Metric):
     ax.set_title(safe_title(os.path.basename(file_path)))
     ax.grid(True, alpha=0.3)
     ax.legend(loc="lower right", fontsize=8)
+    _show_axis_extents(ax)
+    fig.tight_layout()
+    return fig
+
+
+class SpectrogramMetric(Metric):
+  """Log-frequency STFT spectrogram: frequency power distribution over time.
+
+  Each column is the magnitude spectrum of a short window, plotted in serial
+  as a colour-coded heatmap. The hop is chosen adaptively so long tracks don't
+  produce tens of thousands of columns (which would stall the GUI redraw): for
+  typical song lengths the hop lands around 50 ms, coarsening gracefully on
+  very long files.
+  """
+
+  id = "spectrogram"
+  display_name = "Spectrogram"
+
+  N_FFT = 4096           # ~11 Hz bins at 44.1 kHz; keeps low-freq detail now
+                         # that sr is native (nyquist ~22 kHz, not 11 kHz)
+  TARGET_COLUMNS = 4000  # cap on time bins, for render speed
+  DB_FLOOR = -80.0       # dynamic range shown, relative to peak
+  F_MIN = 20.0           # log axis can't show DC; clip the low edge here
+
+  def compute(self, audio_file: AudioFile):
+    y = audio_file.y_mono.astype(np.float32, copy=False)
+    sr = audio_file.sr
+
+    # Pick a hop that keeps the column count near TARGET_COLUMNS, but never
+    # finer than n_fft//4 (the usual 75%-overlap floor).
+    min_hop = self.N_FFT // 4
+    hop = max(min_hop, len(y) // self.TARGET_COLUMNS)
+
+    stft = librosa.stft(y, n_fft=self.N_FFT, hop_length=hop)
+    mag = np.abs(stft)
+    s_db = librosa.amplitude_to_db(mag, ref=np.max)
+
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=self.N_FFT)
+    times = librosa.frames_to_time(
+        np.arange(s_db.shape[1]), sr=sr, hop_length=hop, n_fft=self.N_FFT
+    )
+
+    # Drop the DC bin (0 Hz) so the log frequency axis has no non-positive coord.
+    return {
+      "freqs": freqs[1:],
+      "times": times,
+      "s_db": s_db[1:, :],
+      "nyquist": sr / 2.0,
+    }
+
+  def render(self, data, file_path, figsize=(10, 4)) -> Figure:
+    freqs = data["freqs"]
+    times = data["times"]
+    s_db = data["s_db"]
+    nyquist = data["nyquist"]
+
+    fig = Figure(figsize=figsize, facecolor="white")
+    ax = fig.add_subplot(111)
+    mesh = ax.pcolormesh(
+        times, freqs, s_db,
+        cmap="magma", vmin=self.DB_FLOOR, vmax=0.0, shading="auto",
+    )
+    fig.colorbar(mesh, ax=ax, label="Power (dB)")
+
+    ax.set_yscale("log")
+    ax.set_ylim(self.F_MIN, nyquist)
+    ax.set_xlim(times[0], times[-1])
+    ax.set_ylabel("Frequency (Hz)")
+    ax.set_xlabel("Time (seconds)")
+    ax.set_title(safe_title(os.path.basename(file_path)))
+    _show_axis_extents(ax)
     fig.tight_layout()
     return fig
 
@@ -456,6 +566,7 @@ METRICS: dict[str, Metric] = {
     CrestFactorMetric(),
     PSRMetric(),
     TruePeakMetric(),
+    SpectrogramMetric(),
   )
 }
 DEFAULT_METRIC_ID = "rms_power"

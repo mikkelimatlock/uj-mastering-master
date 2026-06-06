@@ -5,8 +5,8 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 ## Current implementation
 
 ### Core features
-- **Audio Analysis**: Uses librosa to analyze audio files (MP3/WAV/FLAC support)
-- **Pluggable Metrics**: Switchable visualizations (RMS Power, Waveform, LUFS; DR next) via a `Metric` ABC
+- **Audio Analysis**: Uses librosa to analyze audio files (MP3/WAV/FLAC support) at native sample rate (no resampling)
+- **Pluggable Metrics**: Switchable visualizations (RMS Power, Waveform, LUFS, Crest Factor, PSR, True Peak, Spectrogram; DR next) via a `Metric` ABC
 - **Metadata Extraction**: Reads ID3 tags from MP3 files for better file identification
 - **Modular GUI Architecture**: Complete PyQt5 interface with drag-and-drop and file dialog support
 - **Font Management**: Comprehensive CJK-compatible font system with user-provided font support
@@ -50,19 +50,37 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 #### `metrics.py`
 - Pluggable `Metric` ABC: `compute(audio_file) -> data` (heavy, worker thread)
   and `render(data, file_path) -> Figure` (cheap, GUI thread)
-- Current registry: `RMSPowerMetric`, `WaveformMetric`, `LUFSMetric`
-  (BS.1770 short-term + integrated, via pyloudnorm) — drop in new ones (DR,
-  spectrum) by appending an instance to `METRICS`
+- Current registry:
+  - `RMSPowerMetric` — 10 s rolling RMS with adaptive colour scale
+  - `WaveformMetric` — min/max envelope, fixed ±1.1 y-range
+  - `LUFSMetric` — BS.1770 short-term (3 s) + integrated + LRA, via pyloudnorm
+  - `CrestFactorMetric` — 20·log10(peak/RMS) per 1 s window
+  - `PSRMetric` — sample-peak minus short-term LUFS (3 s window)
+  - `TruePeakMetric` — 4× oversampled dBTP via `scipy.signal.resample_poly`
+  - `SpectrogramMetric` — log-frequency STFT heatmap; adaptive hop caps time
+    bins at ~4000, `N_FFT=4096`
+- Shared render helpers: `_show_axis_extents(ax)` forces each axis's exact
+  min/max onto the ticks (so log-axis extremes like 22 kHz are always
+  labelled); `_fmt_tick` keeps those labels compact
+- Drop in new ones (DR, spectral balance) by appending an instance to `METRICS`
 
 #### `master_core.py`
 - Defines the `AudioFile` class: librosa loading, rolling RMS power, BPM detection
+- Loads at **native sample rate** (`librosa.load(..., sr=None)`) so the full
+  band is preserved — analysis runs ~2× heavier on 44.1/48 kHz files than the
+  old 22050 Hz default, by design
 - No batch / CLI mode — all analysis is driven from `main.py` via `AnalysisResultsManager`
 
 ### Current analysis features
+- **Native-rate loading**: full-band analysis up to the file's own nyquist
 - **RMS power analysis**: 10-second rolling window with 2-second hops
 - **Adaptive colour mapping**: Automatically adjusts scale based on detected headroom
   - High dynamic range: 0-0.6 scale for loud masters  
   - Conservative mastering: 0-0.3 scale for quiet masters
+- **Loudness metrics**: LUFS (short-term + integrated + LRA), PSR, Crest Factor
+- **Peak analysis**: True Peak (4× oversampled dBTP)
+- **Spectral view**: log-frequency spectrogram heatmap over time
+- **Readable axes**: exact min/max of every axis is always labelled, even on log scale
 - **BPM detection**: Automatic tempo analysis
 - **Metadata display**: Artist and title from audio tags
 - **Real-time visualization**: Embedded matplotlib plots with font-aware rendering
@@ -84,8 +102,8 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 ### Short-term (not urgent)
 1. **Enhanced metrics** *(plug new ones into `metrics.METRICS`)*
    - Dynamic range measurement (DR meter)
-   - Peak-to-average ratio analysis
-   - Frequency spectrum analysis
+   - Long-term average spectrum (LTAS) / tonal-balance curve
+   - Stereo metrics (correlation, mid/side) — needs `AudioFile` to retain stereo
 
 2. **Interactive plot features**
    - GUI-controllable plotting styles (colormap, visualization type)
@@ -137,12 +155,15 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 ### Dependencies
 - librosa: Audio analysis and feature extraction
 - numpy: Numerical computations
+- scipy: Signal processing (true-peak polyphase oversampling)
+- pyloudnorm: BS.1770 loudness (LUFS, LRA)
 - matplotlib: Plotting and visualization
 - mutagen: Audio metadata extraction
 - PyQt5: GUI framework
 
 ### Architecture considerations
-- Current code mixes analysis and visualization - consider separation
+- Analysis (`metrics.compute`) and visualization (`metrics.render`) are split
+  across the `Metric` ABC; compute runs on a worker thread, render on the GUI
 - File path handling needs improvement for cross-platform compatibility
 - Error handling should be enhanced for production use
 - Consider moving from PyQt5 to PyQt6 or PySide for better licensing
@@ -173,6 +194,5 @@ The only entry point is `ujm` (defined in `pyproject.toml` as
 
 ### Planned usage enhancements
 1. Interactive plot manipulation and style customization
-2. LUFS and advanced metric analysis
-3. Audio file comparison features
-4. Self-contained executable releases
+2. Audio file comparison features (reference vs. comparee)
+3. Self-contained executable releases

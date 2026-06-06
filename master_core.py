@@ -27,8 +27,10 @@ class AudioFile:
     else:
       self.song_name = safe_title(os.path.basename(self.file_path))
 
-    # librosa.load normalises to [-1.0, 1.0]
-    self.y, self.sr = librosa.load(file_path)
+    # librosa.load normalises to [-1.0, 1.0]. sr=None preserves the file's
+    # native sample rate; without it librosa resamples to 22050 Hz, which would
+    # discard everything above ~11 kHz (the entire top octave) before analysis.
+    self.y, self.sr = librosa.load(file_path, sr=None)
     self.y_mono = librosa.to_mono(self.y)
     self.max_amplitude = np.max(np.abs(self.y_mono))
     self.avg_amplitude = np.mean(np.abs(self.y_mono))
