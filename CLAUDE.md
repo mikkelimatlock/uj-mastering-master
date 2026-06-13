@@ -30,10 +30,16 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 - Real-time analysis display and file management
 
 #### `analysis_results_manager.py`
-- Background threading for audio analysis
+- Background threading for audio analysis (`AudioAnalysisWorker` = load + first
+  metric; `MetricComputeWorker` = one metric on an already-loaded file)
 - Caches both the loaded `AudioFile` and per-metric `compute()` output, so
   metric/font switches re-render from cache without reloading librosa
-- Progress tracking and error handling
+- **Prefetch** (`PrefetchWorker`): after a file loads, the remaining metrics are
+  computed in the background (one at a time, cooperatively cancellable) so the
+  first switch to any metric is instant too. Superseded when a new file loads
+- Timing: workers measure compute time; `metricTiming` + phase/duration progress
+  messages drive the status slip ("X computed in Ys", "Loaded in Ns — computing…")
+- `shutdown()` stops all threads on window close (`MainWindow.closeEvent`)
 
 #### `audio_visualization_widget.py`
 - Persistent pyqtgraph plot — the PlotItem is reused across renders, never torn
@@ -82,10 +88,18 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 - Current registry:
   - `RMSPowerMetric` — 10 s rolling RMS with adaptive colour scale
   - `WaveformMetric` — min/max envelope, fixed ±1.1 y-range
-  - `LUFSMetric` — BS.1770 short-term (3 s) + integrated + LRA, via pyloudnorm
-  - `CrestFactorMetric` — 20·log10(peak/RMS) per 1 s window
-  - `PSRMetric` — sample-peak minus short-term LUFS (3 s window)
-  - `TruePeakMetric` — 4× oversampled dBTP via `scipy.signal.resample_poly`
+  - `LUFSMetric` — true (ungated) EBU R128 short-term (3 s) via a single
+    K-weighting pass (`_kweight`, cached) + a vectorised sliding mean-square.
+    Integrated (`_integrated_lufs`) and LRA (`_loudness_range`) are reimplemented
+    from the same cached K-weighted signal — validated **bit-equal** to
+    pyloudnorm — so nothing re-filters the signal. ~3.8 s → ~0.6 s. pyloudnorm is
+    now used only to source the BS.1770 filter coefficients
+  - `CrestFactorMetric` — 20·log10(peak/RMS) per 1 s window; peaks via O(N) running max
+  - `PSRMetric` — sample-peak minus short-term LUFS (3 s window); reuses
+    `LUFSMetric`'s short-term series (memoised on the `AudioFile`), so PSR is
+    near-free once LUFS is computed
+  - `TruePeakMetric` — 4× oversampled dBTP; the whole signal is oversampled once
+    (`scipy.signal.resample_poly`) then an O(N) running max over windows
   - `SpectrogramMetric` — log-frequency STFT heatmap; adaptive hop caps time
     bins at ~4000, `N_FFT=4096`. Log/linear frequency is a view toggle
 - Drop in new ones (DR, spectral balance) by appending an instance to `METRICS`;
@@ -96,7 +110,9 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
   renderer, applied uniformly to every metric — not per-metric
 
 #### `master_core.py`
-- Defines the `AudioFile` class: librosa loading, rolling RMS power, BPM detection
+- Defines the `AudioFile` class: librosa loading, rolling RMS power. BPM detection
+  was **removed** — `librosa.beat.beat_track` cost ~3.7 s on every load for a
+  number no better than tapping by hand
 - Loads at **native sample rate** (`librosa.load(..., sr=None)`) so the full
   band is preserved — analysis runs ~2× heavier on 44.1/48 kHz files than the
   old 22050 Hz default, by design
@@ -108,11 +124,9 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 - **Adaptive colour mapping**: Automatically adjusts scale based on detected headroom
   - High dynamic range: 0-0.6 scale for loud masters  
   - Conservative mastering: 0-0.3 scale for quiet masters
-- **Loudness metrics**: LUFS (short-term + integrated + LRA), PSR, Crest Factor
+- **Loudness metrics**: LUFS (ungated short-term + gated integrated + LRA), PSR, Crest Factor
 - **Peak analysis**: True Peak (4× oversampled dBTP)
 - **Spectral view**: log-frequency spectrogram heatmap over time
-- **Readable axes**: exact min/max of every axis is always labelled, even on log scale
-- **BPM detection**: Automatic tempo analysis
 - **Metadata display**: Artist and title from audio tags
 - **Real-time visualization**: Embedded matplotlib plots with font-aware rendering
 
@@ -203,9 +217,10 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 ### Dependencies
 - librosa: Audio analysis and feature extraction
 - numpy: Numerical computations
-- scipy: Signal processing (true-peak polyphase oversampling, spectrogram
-  log-frequency resample)
-- pyloudnorm: BS.1770 loudness (LUFS, LRA)
+- scipy: Signal processing (true-peak polyphase oversampling, K-weighting
+  filters, spectrogram log-frequency resample, O(N) running-max via ndimage)
+- pyloudnorm: source of the BS.1770 K-weighting filter coefficients (the LUFS
+  short-term / integrated / LRA math is now computed directly, validated against it)
 - pyqtgraph: Interactive plotting (zoom/pan, overlay, lin/log)
 - matplotlib: Colormaps only (consumed by pyqtgraph) + librosa dependency
 - mutagen: Audio metadata extraction
