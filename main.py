@@ -6,12 +6,13 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                             QTextEdit, QListWidgetItem, QPushButton, QFileDialog)
 from PyQt5.QtCore import Qt
 
-from audio_visualization_widget import AudioVisualizationWidget
+from audio_visualization_widget import AudioVisualizationWidget, dataset_color
 from analysis_results_manager import AnalysisResultsManager
 from logger_setup import setup_logging, parse_log_args
 from font_manager import initialize_fonts, get_font_manager
 from font_control_widget import FontControlWidget
 from plot_control_widget import PlotControlWidget
+from metrics import METRICS
 
 
 class MainWindow(QMainWindow):
@@ -21,6 +22,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.logger = logging.getLogger(__name__)
         self.analysis_manager = AnalysisResultsManager()
+        # Guards programmatic list mutations from triggering re-render storms.
+        self._suppress_list_signals = False
         self.initUI()
         self.connect_signals()
     
@@ -66,18 +69,23 @@ class MainWindow(QMainWindow):
         self.font_control.fontSizeChanged.connect(self.on_font_size_changed)
         layout.addWidget(self.font_control)
 
-        # Plot control cluster (metric selector + refresh)
+        # Plot control cluster (metric selector + scale toggle + refresh)
         self.plot_control = PlotControlWidget()
         self.plot_control.metricChanged.connect(self.on_metric_changed)
+        self.plot_control.viewChanged.connect(self.on_view_changed)
         self.plot_control.plotRefreshRequested.connect(self.on_plot_refresh_requested)
+        self.plot_control.addReferenceLineRequested.connect(self.on_add_reference_line)
+        self.plot_control.clearReferenceLinesRequested.connect(self.on_clear_reference_lines)
         layout.addWidget(self.plot_control)
-        
-        # File list
-        self.file_list_label = QLabel("Analyzed Files:")
+
+        # File list. Each item carries a checkbox: the checked set is the overlay
+        # set drawn on the graph; the highlighted item drives the metadata panel.
+        self.file_list_label = QLabel("Analyzed Files (tick to overlay):")
         layout.addWidget(self.file_list_label)
-        
+
         self.file_list = QListWidget()
         self.file_list.itemClicked.connect(self.on_file_selected)
+        self.file_list.itemChanged.connect(self.on_file_check_changed)
         layout.addWidget(self.file_list)
         
         # Metadata display
@@ -160,27 +168,23 @@ class MainWindow(QMainWindow):
         """Called when analysis completes successfully."""
         filename = os.path.basename(file_path)
 
-        # Add to file list if not already there
-        existing_items = [self.file_list.item(i).text()
-                         for i in range(self.file_list.count())]
-        if filename not in existing_items:
+        # Add to file list (checked, so it joins the overlay set) if not present.
+        item = self._item_for_path(file_path)
+        if item is None:
+            self._suppress_list_signals = True
             item = QListWidgetItem(filename)
             item.setData(Qt.UserRole, file_path)  # Store full path
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)
             self.file_list.addItem(item)
+            self._suppress_list_signals = False
 
-        # Update metadata display
-        metadata_text = self.analysis_manager.get_metadata_text(file_path)
-        self.metadata_display.setText(metadata_text)
+        # Update metadata display and highlight the analyzed file.
+        self.metadata_display.setText(self.analysis_manager.get_metadata_text(file_path))
+        self.file_list.setCurrentItem(item)
 
-        # Select the analyzed file in the list
-        for i in range(self.file_list.count()):
-            item = self.file_list.item(i)
-            if item.data(Qt.UserRole) == file_path:
-                self.file_list.setCurrentItem(item)
-                break
-
-        # Render the currently-selected metric (cached, or async-compute it)
-        self._render_or_request(file_path)
+        # Redraw the overlay set for the current metric.
+        self._refresh_view()
     
     def on_analysis_error(self, file_path, error_message):
         """Called when analysis fails."""
@@ -194,84 +198,136 @@ class MainWindow(QMainWindow):
         self.visualization_widget.set_status(f"{message} ({percentage}%)")
     
     def on_file_selected(self, item):
-        """Called when a file is selected from the list."""
+        """Called when a file is highlighted (drives the metadata panel only)."""
         file_path = item.data(Qt.UserRole)
+        self.metadata_display.setText(self.analysis_manager.get_metadata_text(file_path))
 
-        # Update metadata display
-        metadata_text = self.analysis_manager.get_metadata_text(file_path)
-        self.metadata_display.setText(metadata_text)
+    def on_file_check_changed(self, _item):
+        """A checkbox toggled — the overlay set changed; redraw."""
+        if self._suppress_list_signals:
+            return
+        self._refresh_view()
 
-        # Render the currently-selected metric (cached, or async-compute it)
-        self._render_or_request(file_path)
-    
     def on_font_changed(self, font_name: str, font_type: str):
         """Called when font selection changes."""
         self.logger.info(f"Font changed via GUI: {font_name} ({font_type})")
-        # Cheap re-render — cached metric data, redraws under the new font.
-        self._render_or_request(self._current_file_path())
+        self._refresh_view()
 
     def on_font_size_changed(self, font_size: int):
         """Called when Qt font size changes."""
         self.logger.info(f"Qt font size changed via GUI: {font_size}pt")
-        # Qt font size doesn't affect matplotlib plots, so no regeneration needed
+        # Qt font size doesn't affect the plot axes fonts directly; no redraw needed.
 
     def on_metric_changed(self, metric_id: str):
         """Called when the metric selector changes."""
         self.logger.info(f"Metric changed via GUI: {metric_id}")
-        self._render_or_request(self._current_file_path())
+        # The value axis units change with the metric, so custom reference lines
+        # placed against the old metric no longer mean anything — drop them.
+        self.visualization_widget.clear_user_lines()
+        self._refresh_view()
+
+    def on_add_reference_line(self):
+        """Drop a draggable reference line on the current plot."""
+        self.visualization_widget.add_user_line()
+
+    def on_clear_reference_lines(self):
+        """Remove all custom reference lines."""
+        self.visualization_widget.clear_user_lines()
+
+    def on_view_changed(self):
+        """Called when a view-scale toggle (lin/log) changes. Recompute-free redraw."""
+        self.logger.info("View scale changed via GUI")
+        self._refresh_view()
 
     def on_plot_refresh_requested(self):
         """Called when manual plot refresh is requested."""
         self.logger.info("Manual plot refresh requested via GUI")
-        self._render_or_request(self._current_file_path())
+        self._refresh_view()
 
     def on_metric_compute_started(self, file_path: str, metric_id: str):
         """Called when an off-thread metric compute starts."""
-        if file_path != self._current_file_path():
-            return  # selection moved on; status bar shouldn't lie
-        from metrics import METRICS
+        if file_path not in self._overlay_paths():
+            return  # not in the drawn set; status bar shouldn't lie
         metric = METRICS.get(metric_id)
         display = metric.display_name if metric else metric_id
         self.visualization_widget.set_status(f"Computing {display}...")
 
     def on_metric_ready(self, file_path: str, metric_id: str):
         """Called when metric data is available (cached hit or async finish)."""
-        if file_path != self._current_file_path():
-            return  # stale — user moved on
         if metric_id != self.plot_control.current_metric_id():
             return  # user already switched to a different metric
-        figure = self.analysis_manager.get_metric_figure(file_path, metric_id)
-        if figure:
-            self.visualization_widget.display_figure_direct(figure)
+        if file_path not in self._overlay_paths():
+            return  # no longer part of the overlay set
+        self._refresh_view()
 
     def on_metric_compute_error(self, file_path: str, metric_id: str, error_message: str):
         self.logger.error(f"Metric compute failed ({metric_id} / {os.path.basename(file_path)}): {error_message}")
-        if file_path == self._current_file_path():
+        if file_path in self._overlay_paths():
             self.visualization_widget.set_status(f"Error computing {metric_id}: {error_message}")
 
     def _current_file_path(self):
         item = self.file_list.currentItem()
         return item.data(Qt.UserRole) if item else None
 
-    def _render_or_request(self, file_path):
-        """Render the current metric from cache, or kick off async compute if missing.
+    def _item_for_path(self, file_path):
+        for i in range(self.file_list.count()):
+            item = self.file_list.item(i)
+            if item.data(Qt.UserRole) == file_path:
+                return item
+        return None
 
-        Falls back to a full analyse_file if the file hasn't been processed yet
-        (e.g. font change on an empty session — defensive).
+    def _row_index(self, file_path) -> int:
+        for i in range(self.file_list.count()):
+            if self.file_list.item(i).data(Qt.UserRole) == file_path:
+                return i
+        return 0
+
+    def _overlay_paths(self):
+        """File paths whose checkbox is ticked — the set drawn on the graph."""
+        return [
+            self.file_list.item(i).data(Qt.UserRole)
+            for i in range(self.file_list.count())
+            if self.file_list.item(i).checkState() == Qt.Checked
+        ]
+
+    def _refresh_view(self):
+        """Redraw the checked overlay set for the current metric and view-state.
+
+        Renders every dataset whose data is cached; for any that isn't, kicks off
+        an async compute (or a full load if the file was never analysed) and
+        leaves a status note. `on_metric_ready` calls back here when each lands.
         """
-        if not file_path:
-            return
+        paths = self._overlay_paths()
         metric_id = self.plot_control.current_metric_id()
-        figure = self.analysis_manager.get_metric_figure(file_path, metric_id)
-        if figure:
-            self.visualization_widget.display_figure_direct(figure)
+        view = self.plot_control.current_view_state()
+        metric = METRICS.get(metric_id)
+        if not paths or metric is None:
+            self.visualization_widget.show_specs([])
             return
-        # Not cached yet — try async compute if the file has been loaded.
-        if self.analysis_manager.is_file_analyzed(file_path):
-            self.analysis_manager.request_metric(file_path, metric_id)
-        else:
-            # No AudioFile yet either; kick off a full analysis with this metric.
-            self.analysis_manager.analyze_file(file_path, metric_id)
+
+        specs = []
+        pending = 0
+        for path in paths:
+            data = self.analysis_manager.get_metric_data(path, metric_id)
+            if data is None:
+                if self.analysis_manager.is_file_analyzed(path):
+                    self.analysis_manager.request_metric(path, metric_id)
+                else:
+                    self.analysis_manager.analyze_file(path, metric_id)
+                pending += 1
+                continue
+            label = self.analysis_manager.display_label(path)
+            # Colour is keyed to the file's row, not its position in the overlay
+            # subset, so a song keeps its colour as others are ticked/unticked.
+            color = dataset_color(self._row_index(path))
+            specs.append((label, metric.build_spec(data, view), color))
+
+        if specs:
+            self.visualization_widget.show_specs(specs, view)
+        if pending:
+            self.visualization_widget.set_status(
+                f"Computing {metric.display_name} for {pending} file(s)..."
+            )
 
 
 def main():

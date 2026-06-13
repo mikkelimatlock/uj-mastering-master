@@ -1,32 +1,35 @@
 """
 Pluggable analysis metrics.
 
-A `Metric` knows how to compute a series from an `AudioFile` and how to render
-that series into a matplotlib `Figure`. Compute is the heavy step (runs on the
-worker thread); render is cheap and reruns on font / refresh.
+A `Metric` computes a backend-neutral data object from an `AudioFile` and then
+turns that data into a `PlotSpec` (declarative drawing intent). Compute is the
+heavy step and runs on the worker thread; `build_spec` is cheap, view-aware, and
+reruns on every scale toggle / overlay change without recomputation.
 
-To add a metric: subclass `Metric`, implement `compute` and `render`, and
+To add a metric: subclass `Metric`, implement `compute` and `build_spec`, and
 register the instance in `METRICS` at the bottom of this file.
+
+Note: metrics no longer touch matplotlib or know which library draws them. The
+old `_show_axis_extents` endpoint-labelling lived in the matplotlib render path
+and is gone for now; if exact-extent tick labels are wanted back, they belong in
+the renderer, applied uniformly to every metric.
 """
 
 from __future__ import annotations
 
-import os
 import warnings
 from abc import ABC, abstractmethod
 from typing import Any
 
 import numpy as np
-import matplotlib.colors as mcolors
-import matplotlib.cm as cm
-from matplotlib.figure import Figure
-from matplotlib.ticker import FuncFormatter, NullFormatter
 import librosa
 import pyloudnorm as pyln
 from scipy import signal as scipy_signal
 
-from font_manager import safe_title
 from master_core import AudioFile
+from plotspec import (
+  AxisSpec, Band, Curve, Heatmap, HLine, PlotSpec, ViewState, DEFAULT_VIEW,
+)
 
 
 # Small constant to keep 20*log10(...) from blowing up on perfect silence.
@@ -36,38 +39,6 @@ _EPS = 1e-12
 def _to_dbfs(linear: np.ndarray | float) -> np.ndarray | float:
   """Convert a linear magnitude to dBFS, floored at _EPS."""
   return 20.0 * np.log10(np.maximum(linear, _EPS))
-
-
-def _fmt_tick(v, _pos=None) -> str:
-  """Compact tick label: integer for big/whole values, trimmed decimals else."""
-  av = abs(v)
-  if v == 0 or av >= 100:
-    return f"{v:.0f}"
-  if av >= 1:
-    return f"{v:.1f}".rstrip("0").rstrip(".")
-  return f"{v:.3f}".rstrip("0").rstrip(".")
-
-
-def _show_axis_extents(ax) -> None:
-  """Force the exact min/max of each axis onto the tick list.
-
-  Matplotlib's locators often omit the extreme values — most visibly on a log
-  frequency axis, where the top (e.g. 22050 Hz) falls between decade ticks and
-  goes unlabelled. Union the endpoints into the existing in-range ticks so you
-  can always read where a plot actually starts and stops.
-  """
-  fmt = FuncFormatter(_fmt_tick)
-  for is_log, get_lim, set_lim, get_ticks, set_ticks, mpl_axis in (
-    (ax.get_xscale() == "log", ax.get_xlim, ax.set_xlim, ax.get_xticks, ax.set_xticks, ax.xaxis),
-    (ax.get_yscale() == "log", ax.get_ylim, ax.set_ylim, ax.get_yticks, ax.set_yticks, ax.yaxis),
-  ):
-    lo, hi = get_lim()
-    inside = [t for t in get_ticks() if lo <= t <= hi]
-    mpl_axis.set_major_formatter(fmt)
-    if is_log:
-      mpl_axis.set_minor_formatter(NullFormatter())  # keep minor marks unlabelled
-    set_ticks(sorted(set(inside) | {lo, hi}))
-    set_lim(lo, hi)  # set_ticks can nudge the view; restore exact limits
 
 
 class Metric(ABC):
@@ -80,16 +51,22 @@ class Metric(ABC):
   def compute(self, audio_file: AudioFile) -> Any:
     """Compute and return the metric's data from a loaded AudioFile.
 
-    The returned object is cached and later passed to `render`. This is the
-    heavy step and runs on the worker thread.
+    The returned object must be backend-neutral (numpy arrays + scalars). It is
+    cached and later passed to `build_spec`. Heavy; runs on the worker thread.
     """
 
   @abstractmethod
-  def render(self, data: Any, file_path: str, figsize=(10, 4)) -> Figure:
-    """Render a Figure from precomputed data. Cheap; runs on the GUI thread."""
+  def build_spec(self, data: Any, view: ViewState = DEFAULT_VIEW) -> PlotSpec:
+    """Turn precomputed data into a PlotSpec. Cheap; runs on the GUI thread.
+
+    `view` carries recompute-free options (lin/log). Titles are set by the
+    renderer per dataset, not here, so specs compose under overlay.
+    """
 
 
 class RMSPowerMetric(Metric):
+  """Rolling RMS power as a filled area over time."""
+
   id = "rms_power"
   display_name = "RMS Power"
 
@@ -101,35 +78,22 @@ class RMSPowerMetric(Metric):
     audio_file.get_energy_levels_over_time(window=self.window, hop=self.hop)
     return {
       "times": audio_file.get_times(),
-      "rms_array": audio_file.rms_array,
+      "rms": np.asarray(audio_file.rms_array).reshape(-1),
     }
 
-  def render(self, data, file_path, figsize=(10, 4)) -> Figure:
+  def build_spec(self, data, view=DEFAULT_VIEW) -> PlotSpec:
     times = data["times"]
-    rms_array = data["rms_array"]
-
-    # Adaptive colour scale: bump headroom for loud masters.
-    maxpower = 0.6 if np.max(rms_array) > 0.3 else 0.3
-    norm = mcolors.Normalize(vmin=0, vmax=maxpower)
-    cmap = cm.autumn
-
-    fig = Figure(figsize=figsize, facecolor="white")
-    ax = fig.add_subplot(111)
-    ax.set_ylim(0., maxpower)
-    for i in range(len(times) - 1):
-      ax.fill_between(
-        times[i:i + 2], 0, rms_array[0][i],
-        color=cmap(norm(rms_array[0][i])), edgecolor="none",
-      )
-    sm = cm.ScalarMappable(cmap=cmap, norm=norm)
-    sm.set_array([])
-    fig.colorbar(sm, ax=ax, label="RMS Power")
-    ax.set_ylabel("Power")
-    ax.set_xlabel("Time (seconds)")
-    ax.set_title(safe_title(os.path.basename(file_path)))
-    _show_axis_extents(ax)
-    fig.tight_layout()
-    return fig
+    rms = data["rms"]
+    # Adaptive headroom: loud masters get a taller scale.
+    ymax = 0.6 if (rms.size and np.max(rms) > 0.3) else 0.3
+    return PlotSpec(
+      axes=AxisSpec(
+        x_label="Time (seconds)", y_label="Power",
+        y_range=(0.0, ymax),
+        x_range=(float(times[0]), float(times[-1])) if times.size else None,
+      ),
+      bands=[Band(x=times, lo=np.zeros_like(rms), hi=rms, label="RMS power")],
+    )
 
 
 class WaveformMetric(Metric):
@@ -157,38 +121,24 @@ class WaveformMetric(Metric):
     times = (np.arange(self.target_columns) * chunk + chunk / 2) / sr
     return {"times": times, "lo": lo, "hi": hi}
 
-  def render(self, data, file_path, figsize=(10, 4)) -> Figure:
+  def build_spec(self, data, view=DEFAULT_VIEW) -> PlotSpec:
     times = data["times"]
-    lo = data["lo"]
-    hi = data["hi"]
-
-    fig = Figure(figsize=figsize, facecolor="white")
-    ax = fig.add_subplot(111)
-    ax.fill_between(times, lo, hi, color="#3a7ad6", linewidth=0)
-    ax.axhline(0, color="black", linewidth=0.5, alpha=0.3)
-    # Fixed full-scale range with a touch of headroom for float-wav signals.
-    ax.set_ylim(-1.1, 1.1)
-    ax.set_xlim(times[0], times[-1])
-    ax.set_ylabel("Amplitude")
-    ax.set_xlabel("Time (seconds)")
-    ax.set_title(safe_title(os.path.basename(file_path)))
-    _show_axis_extents(ax)
-    fig.tight_layout()
-    return fig
+    return PlotSpec(
+      axes=AxisSpec(
+        x_label="Time (seconds)", y_label="Amplitude",
+        y_range=(-1.1, 1.1),
+        x_range=(float(times[0]), float(times[-1])) if times.size else None,
+      ),
+      bands=[Band(x=times, lo=data["lo"], hi=data["hi"], label="Waveform")],
+    )
 
 
 class LUFSMetric(Metric):
-  """ITU-R BS.1770 loudness: short-term (3 s) time series + integrated + LRA.
-
-  Powered by pyloudnorm. The time series slides `meter.integrated_loudness`
-  across the track because pyloudnorm doesn't expose a per-block series.
-  Slightly redundant work, but the per-call cost is small.
-  """
+  """ITU-R BS.1770 loudness: short-term (3 s) time series + integrated + LRA."""
 
   id = "lufs"
   display_name = "LUFS"
 
-  # Short-term as defined by EBU R128 / BS.1770: 3-second window.
   WINDOW_S = 3.0
   HOP_S = 0.5
   SILENCE_FLOOR = -70.0  # BS.1770 absolute gate
@@ -238,43 +188,32 @@ class LUFSMetric(Metric):
     except (ValueError, FloatingPointError):
       return float("-inf")
 
-  def render(self, data, file_path, figsize=(10, 4)) -> Figure:
+  def build_spec(self, data, view=DEFAULT_VIEW) -> PlotSpec:
     times = data["times"]
     lufs = data["lufs"]
     integrated = data["integrated"]
     lra = data.get("lra", float("nan"))
 
-    fig = Figure(figsize=figsize, facecolor="white")
-    ax = fig.add_subplot(111)
-    ax.plot(times, lufs, color="#2a9d8f", linewidth=1.4, label="Short-term (3 s)")
-
+    hlines = [
+      HLine(y=-14.0, label="-14 LUFS (streaming target)", style="dot"),
+    ]
+    annotations = []
     if np.isfinite(integrated):
-      ax.axhline(
-        integrated, color="#e76f51", linestyle="--", linewidth=1.5,
-        label=f"Integrated: {integrated:.1f} LUFS",
-      )
-
+      hlines.append(HLine(y=integrated, label=f"Integrated: {integrated:.1f} LUFS",
+                          color="#e76f51", style="dash", width=1.5))
     if np.isfinite(lra):
-      # Invisible plot entry to surface LRA in the legend without adding a line.
-      ax.plot([], [], " ", label=f"LRA: {lra:.1f} LU")
+      annotations.append(f"LRA: {lra:.1f} LU")
 
-    # Streaming target reference (Spotify normalises to -14 LUFS).
-    ax.axhline(-14.0, color="gray", linestyle=":", linewidth=0.8, alpha=0.6)
-    ax.text(
-      times[-1], -14.0, "  -14 LUFS (streaming target)",
-      va="center", ha="left", fontsize=8, alpha=0.6,
+    return PlotSpec(
+      axes=AxisSpec(
+        x_label="Time (seconds)", y_label="LUFS",
+        y_range=(-50.0, 0.0),
+        x_range=(float(times[0]), float(times[-1])) if times.size else None,
+      ),
+      curves=[Curve(x=times, y=lufs, label="Short-term (3 s)")],
+      hlines=hlines,
+      annotations=annotations,
     )
-
-    ax.set_ylim(-50.0, 0.0)
-    ax.set_xlim(times[0], times[-1])
-    ax.set_ylabel("LUFS")
-    ax.set_xlabel("Time (seconds)")
-    ax.set_title(safe_title(os.path.basename(file_path)))
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc="lower right", fontsize=8)
-    _show_axis_extents(ax)
-    fig.tight_layout()
-    return fig
 
 
 class CrestFactorMetric(Metric):
@@ -317,38 +256,24 @@ class CrestFactorMetric(Metric):
     times = (starts + window_n / 2.0) / sr
     return {"times": times, "crest_db": crest_db}
 
-  def render(self, data, file_path, figsize=(10, 4)) -> Figure:
+  def build_spec(self, data, view=DEFAULT_VIEW) -> PlotSpec:
     times = data["times"]
-    crest_db = data["crest_db"]
-
-    fig = Figure(figsize=figsize, facecolor="white")
-    ax = fig.add_subplot(111)
-    ax.plot(times, crest_db, color="#e09f3e", linewidth=1.4, label=f"Crest factor (1 s)")
-
-    # Rules of thumb: ~12 dB = roomy, ~6 dB = heavily limited.
-    ax.axhline(12.0, color="gray", linestyle=":", linewidth=0.8, alpha=0.6)
-    ax.text(times[-1], 12.0, "  12 dB", va="center", ha="left", fontsize=8, alpha=0.6)
-    ax.axhline(6.0, color="gray", linestyle=":", linewidth=0.8, alpha=0.6)
-    ax.text(times[-1], 6.0, "  6 dB (squashed)", va="center", ha="left", fontsize=8, alpha=0.6)
-
-    ax.set_ylim(0.0, 25.0)
-    ax.set_xlim(times[0], times[-1])
-    ax.set_ylabel("Crest factor (dB)")
-    ax.set_xlabel("Time (seconds)")
-    ax.set_title(safe_title(os.path.basename(file_path)))
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc="lower right", fontsize=8)
-    _show_axis_extents(ax)
-    fig.tight_layout()
-    return fig
+    return PlotSpec(
+      axes=AxisSpec(
+        x_label="Time (seconds)", y_label="Crest factor (dB)",
+        y_range=(0.0, 25.0),
+        x_range=(float(times[0]), float(times[-1])) if times.size else None,
+      ),
+      curves=[Curve(x=times, y=data["crest_db"], label="Crest factor (1 s)")],
+      hlines=[
+        HLine(y=12.0, label="12 dB", style="dot"),
+        HLine(y=6.0, label="6 dB (squashed)", style="dot"),
+      ],
+    )
 
 
 class PSRMetric(Metric):
-  """Peak-to-Short-term LUFS Ratio (sample-peak variant), in LU.
-
-  PSR = sample_peak_dBFS - short_term_LUFS  over the same 3 s windows used by
-  LUFSMetric. High PSR = punchy transients; low PSR = heavily limited.
-  """
+  """Peak-to-Short-term LUFS Ratio (sample-peak variant), in LU."""
 
   id = "psr"
   display_name = "PSR"
@@ -390,39 +315,24 @@ class PSRMetric(Metric):
     psr = np.where(valid, peaks_db - lufs_series, np.nan)
     return {"times": times, "psr": psr}
 
-  def render(self, data, file_path, figsize=(10, 4)) -> Figure:
+  def build_spec(self, data, view=DEFAULT_VIEW) -> PlotSpec:
     times = data["times"]
-    psr = data["psr"]
-
-    fig = Figure(figsize=figsize, facecolor="white")
-    ax = fig.add_subplot(111)
-    ax.plot(times, psr, color="#7251b5", linewidth=1.4, label="PSR (3 s)")
-
-    # Ian Shepherd's rough thresholds.
-    ax.axhline(10.0, color="gray", linestyle=":", linewidth=0.8, alpha=0.6)
-    ax.text(times[-1], 10.0, "  10 LU (good punch)", va="center", ha="left", fontsize=8, alpha=0.6)
-    ax.axhline(4.0, color="gray", linestyle=":", linewidth=0.8, alpha=0.6)
-    ax.text(times[-1], 4.0, "  4 LU (squashed)", va="center", ha="left", fontsize=8, alpha=0.6)
-
-    ax.set_ylim(0.0, 25.0)
-    ax.set_xlim(times[0], times[-1])
-    ax.set_ylabel("PSR (LU)")
-    ax.set_xlabel("Time (seconds)")
-    ax.set_title(safe_title(os.path.basename(file_path)))
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc="lower right", fontsize=8)
-    _show_axis_extents(ax)
-    fig.tight_layout()
-    return fig
+    return PlotSpec(
+      axes=AxisSpec(
+        x_label="Time (seconds)", y_label="PSR (LU)",
+        y_range=(0.0, 25.0),
+        x_range=(float(times[0]), float(times[-1])) if times.size else None,
+      ),
+      curves=[Curve(x=times, y=data["psr"], label="PSR (3 s)")],
+      hlines=[
+        HLine(y=10.0, label="10 LU (good punch)", style="dot"),
+        HLine(y=4.0, label="4 LU (squashed)", style="dot"),
+      ],
+    )
 
 
 class TruePeakMetric(Metric):
-  """ITU-R BS.1770 true peak via 4x polyphase oversampling, in dBTP.
-
-  Per-window true peak with a moderate hop so it renders quickly. Windows are
-  oversampled independently — slight edge under-detection at window boundaries
-  is masked by the 60% overlap.
-  """
+  """ITU-R BS.1770 true peak via 4x polyphase oversampling, in dBTP."""
 
   id = "true_peak"
   display_name = "True Peak"
@@ -458,61 +368,42 @@ class TruePeakMetric(Metric):
     integrated_tp_db = float(np.max(tp_db))
     return {"times": times, "tp_db": tp_db, "integrated_tp_db": integrated_tp_db}
 
-  def render(self, data, file_path, figsize=(10, 4)) -> Figure:
+  def build_spec(self, data, view=DEFAULT_VIEW) -> PlotSpec:
     times = data["times"]
-    tp_db = data["tp_db"]
     integrated = data.get("integrated_tp_db", float("nan"))
-
-    fig = Figure(figsize=figsize, facecolor="white")
-    ax = fig.add_subplot(111)
-    ax.plot(times, tp_db, color="#c1121f", linewidth=1.0, label="True Peak (250 ms)")
-
-    # 0 dBTP = sample-level clip; -1 dBTP a common mastering ceiling.
-    ax.axhline(0.0, color="black", linestyle="--", linewidth=1.0, alpha=0.8)
-    ax.text(times[-1], 0.0, "  0 dBTP (clip)", va="center", ha="left", fontsize=8, alpha=0.7)
-    ax.axhline(-1.0, color="gray", linestyle=":", linewidth=0.8, alpha=0.6)
-    ax.text(times[-1], -1.0, "  -1 dBTP (typical ceiling)", va="center", ha="left", fontsize=8, alpha=0.6)
-
+    annotations = []
     if np.isfinite(integrated):
-      ax.plot([], [], " ", label=f"Max: {integrated:.2f} dBTP")
-
-    ax.set_ylim(-30.0, 6.0)
-    ax.set_xlim(times[0], times[-1])
-    ax.set_ylabel("dBTP")
-    ax.set_xlabel("Time (seconds)")
-    ax.set_title(safe_title(os.path.basename(file_path)))
-    ax.grid(True, alpha=0.3)
-    ax.legend(loc="lower right", fontsize=8)
-    _show_axis_extents(ax)
-    fig.tight_layout()
-    return fig
+      annotations.append(f"Max: {integrated:.2f} dBTP")
+    return PlotSpec(
+      axes=AxisSpec(
+        x_label="Time (seconds)", y_label="dBTP",
+        y_range=(-30.0, 6.0),
+        x_range=(float(times[0]), float(times[-1])) if times.size else None,
+      ),
+      curves=[Curve(x=times, y=data["tp_db"], label="True Peak (250 ms)", width=1.0)],
+      hlines=[
+        HLine(y=0.0, label="0 dBTP (clip)", color="#000000", style="dash", width=1.0),
+        HLine(y=-1.0, label="-1 dBTP (typical ceiling)", style="dot"),
+      ],
+      annotations=annotations,
+    )
 
 
 class SpectrogramMetric(Metric):
-  """Log-frequency STFT spectrogram: frequency power distribution over time.
-
-  Each column is the magnitude spectrum of a short window, plotted in serial
-  as a colour-coded heatmap. The hop is chosen adaptively so long tracks don't
-  produce tens of thousands of columns (which would stall the GUI redraw): for
-  typical song lengths the hop lands around 50 ms, coarsening gracefully on
-  very long files.
-  """
+  """Log-frequency STFT spectrogram: frequency power distribution over time."""
 
   id = "spectrogram"
   display_name = "Spectrogram"
 
-  N_FFT = 4096           # ~11 Hz bins at 44.1 kHz; keeps low-freq detail now
-                         # that sr is native (nyquist ~22 kHz, not 11 kHz)
-  TARGET_COLUMNS = 4000  # cap on time bins, for render speed
-  DB_FLOOR = -80.0       # dynamic range shown, relative to peak
-  F_MIN = 20.0           # log axis can't show DC; clip the low edge here
+  N_FFT = 4096
+  TARGET_COLUMNS = 4000
+  DB_FLOOR = -80.0
+  F_MIN = 20.0  # log axis can't show DC; clip the low edge here
 
   def compute(self, audio_file: AudioFile):
     y = audio_file.y_mono.astype(np.float32, copy=False)
     sr = audio_file.sr
 
-    # Pick a hop that keeps the column count near TARGET_COLUMNS, but never
-    # finer than n_fft//4 (the usual 75%-overlap floor).
     min_hop = self.N_FFT // 4
     hop = max(min_hop, len(y) // self.TARGET_COLUMNS)
 
@@ -525,7 +416,7 @@ class SpectrogramMetric(Metric):
         np.arange(s_db.shape[1]), sr=sr, hop_length=hop, n_fft=self.N_FFT
     )
 
-    # Drop the DC bin (0 Hz) so the log frequency axis has no non-positive coord.
+    # Drop the DC bin (0 Hz) so a log frequency axis has no non-positive coord.
     return {
       "freqs": freqs[1:],
       "times": times,
@@ -533,29 +424,24 @@ class SpectrogramMetric(Metric):
       "nyquist": sr / 2.0,
     }
 
-  def render(self, data, file_path, figsize=(10, 4)) -> Figure:
+  def build_spec(self, data, view=DEFAULT_VIEW) -> PlotSpec:
     freqs = data["freqs"]
     times = data["times"]
-    s_db = data["s_db"]
     nyquist = data["nyquist"]
+    y_log = view.resolve_y_log(default=True)  # log frequency by default
 
-    fig = Figure(figsize=figsize, facecolor="white")
-    ax = fig.add_subplot(111)
-    mesh = ax.pcolormesh(
-        times, freqs, s_db,
-        cmap="magma", vmin=self.DB_FLOOR, vmax=0.0, shading="auto",
+    return PlotSpec(
+      axes=AxisSpec(
+        x_label="Time (seconds)", y_label="Frequency (Hz)",
+        y_log=y_log, y_log_allowed=True,
+        y_range=(self.F_MIN, float(nyquist)),
+        x_range=(float(times[0]), float(times[-1])) if times.size else None,
+      ),
+      heatmap=Heatmap(
+        x=times, y=freqs, z=data["s_db"],
+        z_min=self.DB_FLOOR, z_max=0.0, cmap="magma", label="Power (dB)",
+      ),
     )
-    fig.colorbar(mesh, ax=ax, label="Power (dB)")
-
-    ax.set_yscale("log")
-    ax.set_ylim(self.F_MIN, nyquist)
-    ax.set_xlim(times[0], times[-1])
-    ax.set_ylabel("Frequency (Hz)")
-    ax.set_xlabel("Time (seconds)")
-    ax.set_title(safe_title(os.path.basename(file_path)))
-    _show_axis_extents(ax)
-    fig.tight_layout()
-    return fig
 
 
 METRICS: dict[str, Metric] = {
