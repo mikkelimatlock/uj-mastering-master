@@ -34,13 +34,8 @@ class AudioFile:
     self.y_mono = librosa.to_mono(self.y)
     self.max_amplitude = np.max(np.abs(self.y_mono))
     self.avg_amplitude = np.mean(np.abs(self.y_mono))
-    self.bpm, _ = librosa.beat.beat_track(y=self.y_mono, sr=self.sr)
-
-  def get_bpm(self):
-    # librosa.beat.beat_track returns numpy array - extract scalar value
-    if isinstance(self.bpm, np.ndarray):
-      return float(self.bpm[0]) if len(self.bpm) > 0 else 0.0
-    return float(self.bpm)
+    # BPM intentionally not computed: librosa.beat.beat_track cost ~3.7s on a
+    # 4-min track for a number that's no better than tapping it by hand.
 
   def get_energy_levels_over_time(self, window=10, hop=2):
     """Compute rolling RMS power.

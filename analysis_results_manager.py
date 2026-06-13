@@ -20,7 +20,6 @@ class AnalysisResult:
   file_path: str
   audio_file: AudioFile
   song_name: str
-  bpm: float
   max_amplitude: float
   avg_amplitude: float
   metric_data: dict[str, Any] = field(default_factory=dict)
@@ -30,7 +29,6 @@ class AnalysisResult:
   def metadata_text(self) -> str:
     return (
       f"Track: {safe_title(self.song_name)}\n"
-      f"BPM: {self.bpm:.1f}\n"
       f"Max Amplitude: {self.max_amplitude:.3f}\n"
       f"Avg Amplitude: {self.avg_amplitude:.3f}"
     )
@@ -55,7 +53,7 @@ class AudioAnalysisWorker(QThread):
       self.progressUpdate.emit("Loading audio file...", 10)
 
       audio_file = AudioFile(self.file_path)
-      self.progressUpdate.emit("Audio loaded, detecting tempo...", 30)
+      self.progressUpdate.emit("Audio loaded...", 30)
 
       self.progressUpdate.emit(f"Computing {self.metric.display_name}...", 60)
       metric_data = {self.metric.id: self.metric.compute(audio_file)}
@@ -66,7 +64,6 @@ class AudioAnalysisWorker(QThread):
         file_path=self.file_path,
         audio_file=audio_file,
         song_name=audio_file.song_name,
-        bpm=audio_file.get_bpm(),
         max_amplitude=audio_file.max_amplitude,
         avg_amplitude=audio_file.avg_amplitude,
         metric_data=metric_data,
@@ -74,9 +71,7 @@ class AudioAnalysisWorker(QThread):
       )
 
       self.progressUpdate.emit("Analysis complete!", 100)
-      self.logger.info(
-        f"Analysis completed: {os.path.basename(self.file_path)} (BPM: {result.bpm:.1f})"
-      )
+      self.logger.info(f"Analysis completed: {os.path.basename(self.file_path)}")
       self.analysisCompleted.emit(self.file_path, result)
 
     except Exception as e:

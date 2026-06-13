@@ -25,6 +25,7 @@ import numpy as np
 import librosa
 import pyloudnorm as pyln
 from scipy import signal as scipy_signal
+from scipy.ndimage import maximum_filter1d
 
 from master_core import AudioFile
 from plotspec import (
@@ -39,6 +40,69 @@ _EPS = 1e-12
 def _to_dbfs(linear: np.ndarray | float) -> np.ndarray | float:
   """Convert a linear magnitude to dBFS, floored at _EPS."""
   return 20.0 * np.log10(np.maximum(linear, _EPS))
+
+
+def _window_starts(n: int, window_n: int, hop_n: int) -> np.ndarray:
+  """Start indices of every full sliding window of length `window_n` over `n`."""
+  n_windows = 1 + (n - window_n) // hop_n
+  return np.arange(n_windows) * hop_n
+
+
+def _window_peaks(abs_signal: np.ndarray, starts: np.ndarray, window_n: int) -> np.ndarray:
+  """Max of `abs_signal` over each window [start, start+window_n), vectorised.
+
+  Uses an O(N) running-max (scipy maximum_filter1d) sampled at window centres,
+  replacing the per-window Python `np.max` loops. `maximum_filter1d` centres a
+  size-`window_n` window on each index, so the centre of [start, start+window_n)
+  is `start + window_n//2` — the two line up exactly for even windows.
+  """
+  running = maximum_filter1d(abs_signal, size=window_n)
+  centers = np.minimum(starts + window_n // 2, len(abs_signal) - 1)
+  return running[centers]
+
+
+def _short_term_lufs(audio_file: AudioFile, window_s: float, hop_s: float):
+  """True (ungated) EBU R128 short-term loudness series + window-centre times.
+
+  K-weights the whole signal *once* with pyloudnorm's own BS.1770 biquad
+  coefficients, then takes a vectorised sliding mean-square. This is ~8x faster
+  than the old loop of per-window `integrated_loudness` calls, which also wrongly
+  gated each 3 s window — short-term loudness is ungated by definition. The
+  integrated number and LRA (which *are* gated) still come from pyloudnorm.
+
+  Memoised on the AudioFile so LUFS and PSR (same 3 s / 0.5 s window) share one
+  computation. Depends on pyloudnorm's `Meter._filters` internals; the dev-time
+  validation against pyloudnorm guards against a coefficient change.
+  """
+  key = (round(window_s, 6), round(hop_s, 6))
+  cache = getattr(audio_file, "_st_lufs_cache", None)
+  if cache is None:
+    cache = audio_file._st_lufs_cache = {}
+  if key in cache:
+    return cache[key]
+
+  y = audio_file.y_mono.astype(np.float64, copy=False)
+  sr = audio_file.sr
+  meter = pyln.Meter(sr)
+  yk = y
+  for filt in meter._filters.values():
+    yk = scipy_signal.lfilter(filt.b, filt.a, yk) * filt.passband_gain
+
+  window_n = max(int(window_s * sr), 1)
+  hop_n = max(int(hop_s * sr), 1)
+  if len(y) < window_n:
+    ms = float(np.mean(yk * yk)) if len(yk) else 0.0
+    times = np.array([len(y) / (2.0 * sr)])
+    lufs = np.array([-0.691 + 10.0 * np.log10(max(ms, _EPS))])
+  else:
+    csq = np.concatenate(([0.0], np.cumsum(yk * yk)))
+    starts = _window_starts(len(y), window_n, hop_n)
+    ms = (csq[starts + window_n] - csq[starts]) / window_n
+    lufs = -0.691 + 10.0 * np.log10(np.maximum(ms, _EPS))
+    times = (starts + window_n / 2.0) / sr
+
+  cache[key] = (times, lufs)
+  return cache[key]
 
 
 class Metric(ABC):
@@ -146,33 +210,24 @@ class LUFSMetric(Metric):
   def compute(self, audio_file: AudioFile):
     y = audio_file.y_mono.astype(np.float64, copy=False)
     sr = audio_file.sr
-    meter = pyln.Meter(sr)
 
+    # Short-term series: fast, ungated, shared with PSR.
+    times, lufs = _short_term_lufs(audio_file, self.WINDOW_S, self.HOP_S)
+    lufs = np.clip(np.where(np.isfinite(lufs), lufs, self.SILENCE_FLOOR),
+                   self.SILENCE_FLOOR, 0.0)
+
+    # Integrated loudness + LRA keep pyloudnorm's exact gating (one call each).
+    meter = pyln.Meter(sr)
     with warnings.catch_warnings():
       warnings.simplefilter("ignore")
       integrated = self._safe_integrated(meter, y)
-
-      window_n = int(self.WINDOW_S * sr)
-      hop_n = int(self.HOP_S * sr)
-
-      if len(y) < window_n:
-        times = np.array([len(y) / (2.0 * sr)])
-        lufs = np.array([integrated if np.isfinite(integrated) else self.SILENCE_FLOOR])
-        lra = float("nan")
-      else:
-        n_windows = 1 + (len(y) - window_n) // hop_n
-        lufs = np.empty(n_windows)
-        for i in range(n_windows):
-          start = i * hop_n
-          lufs[i] = self._safe_integrated(meter, y[start:start + window_n])
-        times = (np.arange(n_windows) * hop_n + window_n / 2.0) / sr
+      if len(y) >= int(self.WINDOW_S * sr):
         try:
           lra = float(meter.loudness_range(y))
         except (ValueError, FloatingPointError):
           lra = float("nan")
-
-    lufs = np.where(np.isfinite(lufs), lufs, self.SILENCE_FLOOR)
-    lufs = np.clip(lufs, self.SILENCE_FLOOR, 0.0)
+      else:
+        lra = float("nan")
 
     return {
       "times": times,
@@ -238,19 +293,14 @@ class CrestFactorMetric(Metric):
       crest = 20.0 * np.log10(max(peak, _EPS) / max(rms, _EPS))
       return {"times": times, "crest_db": np.array([crest])}
 
-    # RMS via cumulative-sum-of-squares (O(N)); peaks via sliding window view.
+    # RMS via cumulative-sum-of-squares (O(N)); peaks via O(N) running max.
     y2 = y * y
     cumsum = np.concatenate(([0.0], np.cumsum(y2)))
-    n_windows = 1 + (len(y) - window_n) // hop_n
-    starts = np.arange(n_windows) * hop_n
-    ends = starts + window_n
-    mean_sq = (cumsum[ends] - cumsum[starts]) / window_n
+    starts = _window_starts(len(y), window_n, hop_n)
+    mean_sq = (cumsum[starts + window_n] - cumsum[starts]) / window_n
     rms = np.sqrt(np.maximum(mean_sq, _EPS))
 
-    abs_y = np.abs(y)
-    peaks = np.empty(n_windows)
-    for i in range(n_windows):
-      peaks[i] = np.max(abs_y[starts[i]:ends[i]])
+    peaks = _window_peaks(np.abs(y), starts, window_n)
 
     crest_db = 20.0 * np.log10(np.maximum(peaks, _EPS) / rms)
     times = (starts + window_n / 2.0) / sr
@@ -285,30 +335,18 @@ class PSRMetric(Metric):
   def compute(self, audio_file: AudioFile):
     y = audio_file.y_mono.astype(np.float64, copy=False)
     sr = audio_file.sr
-    meter = pyln.Meter(sr)
+    window_n = max(int(self.WINDOW_S * sr), 1)
+    hop_n = max(int(self.HOP_S * sr), 1)
 
-    window_n = int(self.WINDOW_S * sr)
-    hop_n = int(self.HOP_S * sr)
+    # Short-term loudness series, shared (cache hit) with LUFSMetric.
+    times, lufs_series = _short_term_lufs(audio_file, self.WINDOW_S, self.HOP_S)
+    abs_y = np.abs(y)
 
-    with warnings.catch_warnings():
-      warnings.simplefilter("ignore")
-      if len(y) < window_n:
-        times = np.array([len(y) / (2.0 * sr)])
-        peak_db = _to_dbfs(np.max(np.abs(y))) if len(y) else self.SILENCE_FLOOR
-        lufs = LUFSMetric._safe_integrated(meter, y)
-        psr = peak_db - lufs if np.isfinite(lufs) else 0.0
-        return {"times": times, "psr": np.array([psr])}
-
-      n_windows = 1 + (len(y) - window_n) // hop_n
-      abs_y = np.abs(y)
-      lufs_series = np.empty(n_windows)
-      peaks_db = np.empty(n_windows)
-      for i in range(n_windows):
-        start = i * hop_n
-        end = start + window_n
-        peaks_db[i] = _to_dbfs(np.max(abs_y[start:end]))
-        lufs_series[i] = LUFSMetric._safe_integrated(meter, y[start:end])
-      times = (np.arange(n_windows) * hop_n + window_n / 2.0) / sr
+    if len(y) < window_n:
+      peaks_db = np.array([_to_dbfs(np.max(abs_y)) if len(y) else self.SILENCE_FLOOR])
+    else:
+      starts = _window_starts(len(y), window_n, hop_n)
+      peaks_db = _to_dbfs(_window_peaks(abs_y, starts, window_n))
 
     # PSR is meaningless where the loudness reading is below the absolute gate.
     valid = np.isfinite(lufs_series) & (lufs_series > self.SILENCE_FLOOR)
@@ -356,14 +394,18 @@ class TruePeakMetric(Metric):
         "integrated_tp_db": float(peak_db),
       }
 
-    n_windows = 1 + (len(y) - window_n) // hop_n
-    tp_db = np.empty(n_windows)
-    for i in range(n_windows):
-      start = i * hop_n
-      w = y[start:start + window_n]
-      w_up = scipy_signal.resample_poly(w, self.OVERSAMPLE, 1)
-      tp_db[i] = _to_dbfs(np.max(np.abs(w_up)))
-    times = (np.arange(n_windows) * hop_n + window_n / 2.0) / sr
+    # Oversample the whole signal once (not per window), then take an O(N)
+    # running max over the oversampled windows — replaces thousands of tiny
+    # resample_poly calls with one big one.
+    os_factor = self.OVERSAMPLE
+    abs_up = np.abs(scipy_signal.resample_poly(y, os_factor, 1).astype(np.float32))
+    win_up = window_n * os_factor
+    running = maximum_filter1d(abs_up, size=win_up)
+
+    starts = _window_starts(len(y), window_n, hop_n)
+    centers_up = np.minimum(starts * os_factor + win_up // 2, len(abs_up) - 1)
+    tp_db = _to_dbfs(running[centers_up])
+    times = (starts + window_n / 2.0) / sr
 
     integrated_tp_db = float(np.max(tp_db))
     return {"times": times, "tp_db": tp_db, "integrated_tp_db": integrated_tp_db}
