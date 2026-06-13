@@ -9,8 +9,7 @@ from PyQt5.QtCore import Qt
 from audio_visualization_widget import AudioVisualizationWidget, dataset_color
 from analysis_results_manager import AnalysisResultsManager
 from logger_setup import setup_logging, parse_log_args
-from font_manager import initialize_fonts, get_font_manager
-from font_control_widget import FontControlWidget
+from font_manager import initialize_fonts, apply_fixed_font
 from plot_control_widget import PlotControlWidget
 from ref_line_widget import RefLineControlWidget, RefLineDialog
 from metrics import METRICS
@@ -26,10 +25,12 @@ class MainWindow(QMainWindow):
         self.analysis_manager = AnalysisResultsManager()
         # Guards programmatic list mutations from triggering re-render storms.
         self._suppress_list_signals = False
-        # Custom reference lines, owned here and pushed to the plot each render.
-        self.ref_lines: list[RefLineProps] = []
+        # Reference lines are kept per metric (a -14 LUFS line means nothing on a
+        # spectrogram), so they persist when you switch metrics and come back.
+        self.ref_lines_by_metric: dict[str, list[RefLineProps]] = {}
         self.initUI()
         self.connect_signals()
+        self._activate_ref_lines()
     
     def initUI(self):
         """Initialize the user interface."""
@@ -66,12 +67,6 @@ class MainWindow(QMainWindow):
         self.open_file_button = QPushButton("Open Audio File...")
         self.open_file_button.clicked.connect(self.open_file_dialog)
         layout.addWidget(self.open_file_button)
-        
-        # Font control cluster
-        self.font_control = FontControlWidget()
-        self.font_control.fontChanged.connect(self.on_font_changed)
-        self.font_control.fontSizeChanged.connect(self.on_font_size_changed)
-        layout.addWidget(self.font_control)
 
         # Plot control cluster (metric selector + scale toggle + refresh)
         self.plot_control = PlotControlWidget()
@@ -219,28 +214,17 @@ class MainWindow(QMainWindow):
             return
         self._refresh_view()
 
-    def on_font_changed(self, font_name: str, font_type: str):
-        """Called when font selection changes."""
-        self.logger.info(f"Font changed via GUI: {font_name} ({font_type})")
-        self._refresh_view()
-
-    def on_font_size_changed(self, font_size: int):
-        """Called when Qt font size changes."""
-        self.logger.info(f"Qt font size changed via GUI: {font_size}pt")
-        # Qt font size doesn't affect the plot axes fonts directly; no redraw needed.
-
     def on_metric_changed(self, metric_id: str):
         """Called when the metric selector changes."""
         self.logger.info(f"Metric changed via GUI: {metric_id}")
-        # The value axis units change with the metric, so custom reference lines
-        # placed against the old metric no longer mean anything — drop them.
-        self.ref_lines.clear()
-        self._sync_ref_lines()
+        # Reference lines are kept per metric, so swap in this metric's set rather
+        # than discarding — switch away and back and your lines are still there.
+        self._activate_ref_lines()
         self._refresh_view()
 
     def on_add_reference_line(self):
         """Add a reference line at the current view centre, then edit it."""
-        value = self.visualization_widget.current_view_center_y()
+        value = self.visualization_widget.current_view_center_value()
         props = RefLineProps(value=round(value, 2))
         self.ref_lines.append(props)
         self._sync_ref_lines()
@@ -251,7 +235,7 @@ class MainWindow(QMainWindow):
         """Open the properties dialog for a reference line."""
         if not (0 <= index < len(self.ref_lines)):
             return
-        dialog = RefLineDialog(self, self.ref_lines[index])
+        dialog = RefLineDialog(self, self.ref_lines[index], value_units=self._ref_value_units())
         if dialog.exec_():
             self.ref_lines[index] = dialog.result_props()
             self._sync_ref_lines()
@@ -263,13 +247,23 @@ class MainWindow(QMainWindow):
             self._sync_ref_lines()
 
     def on_clear_reference_lines(self):
-        """Remove all custom reference lines."""
+        """Remove all custom reference lines for the current metric."""
         self.ref_lines.clear()
         self._sync_ref_lines()
 
     def on_reference_line_moved(self, index: int):
         """A line was dragged on the plot — its value is already updated; refresh list."""
         self.ref_line_control.set_lines(self.ref_lines)
+
+    def _activate_ref_lines(self):
+        """Point `self.ref_lines` at the current metric's set and sync the UI."""
+        metric_id = self.plot_control.current_metric_id()
+        self.ref_lines = self.ref_lines_by_metric.setdefault(metric_id, [])
+        self._sync_ref_lines()
+
+    def _ref_value_units(self) -> str:
+        """Units a reference line's value is expressed in for the current metric."""
+        return "Hz" if self.plot_control.current_metric_id() == "spectrogram" else ""
 
     def _sync_ref_lines(self):
         """Push the current reference-line set to both the list view and the plot."""
@@ -384,17 +378,12 @@ def main():
 
     app = QApplication(sys.argv)
 
-    # Initialize font system before creating any widgets
-    font_success = initialize_fonts()
-    if font_success:
-        logger.info("Font system initialized successfully")
-        # Log font status for debugging
-        font_status = get_font_manager().get_status_report()
-        logger.debug(f"Font status: matplotlib={font_status['matplotlib_configured']}, "
-                    f"qt={font_status['qt_configured']}, "
-                    f"custom_fonts={font_status['custom_fonts_loaded']}")
-    else:
-        logger.warning("Font system initialization failed - CJK characters may not display properly")
+    # Initialize font system (loads any fonts/ files, configures fallbacks) then
+    # lock the UI font. M PLUS 1 Code has full Japanese coverage, so this stays
+    # CJK-safe; falls back to the system default if the family isn't present.
+    initialize_fonts()
+    chosen = apply_fixed_font("M PLUS 1 Code", 10)
+    logger.info(f"UI font locked to '{chosen}' at 10pt")
 
     # Set application style
     app.setStyle('Fusion')  # Modern cross-platform style

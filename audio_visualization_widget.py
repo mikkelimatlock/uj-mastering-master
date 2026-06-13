@@ -84,27 +84,38 @@ class _AxisZoomViewBox(pg.ViewBox):
 class _RefLine(pg.InfiniteLine):
   """A draggable horizontal reference line bound to a RefLineProps.
 
-  Carries a triangle grab-handle at the left edge and writes its position back
-  into the props on drag, notifying the widget so the side-panel list refreshes.
+  `props.value` is in the metric's natural units (LUFS, dB, ... or Hz for the
+  spectrogram). The drawn y-position may differ from that value — the spectrogram
+  maps frequency to a row index — so `to_pos`/`from_pos` convert between the two.
+  For curve metrics these are identity. The label and the value written back on
+  drag are always in natural units.
   """
 
-  def __init__(self, index: int, props: RefLineProps, on_moved):
+  def __init__(self, index, props: RefLineProps, to_pos, from_pos, fmt, on_moved):
     pen = pg.mkPen(props.color, width=1.4,
                    style=_PEN_STYLE.get(props.style, Qt.DashLine))
     super().__init__(
-      pos=props.value, angle=0, movable=True, pen=pen,
-      label=props.label or "{value:.2f}",
+      pos=to_pos(props.value), angle=0, movable=True, pen=pen,
+      label="",
       labelOpts={"position": 0.06, "color": props.color,
                  "fill": (255, 255, 255, 180)},
     )
     self._index = index
     self._props = props
+    self._from_pos = from_pos
+    self._fmt = fmt
     self._on_moved = on_moved
     self.addMarker("|>", position=0.0, size=12)  # triangle handle at the start
+    self._update_label()
+    self.sigPositionChanged.connect(self._update_label)
     self.sigPositionChangeFinished.connect(self._commit)
 
+  def _update_label(self):
+    val = self._from_pos(self.value())
+    self.label.setFormat(self._props.label or self._fmt(val))
+
   def _commit(self):
-    self._props.value = float(self.value())
+    self._props.value = float(self._from_pos(self.value()))
     self._on_moved(self._index)
 
 
@@ -134,6 +145,11 @@ class AudioVisualizationWidget(QWidget):
     # passed in via set_reference_lines; the line items are rebuilt each render.
     self._ref_props: list[RefLineProps] = []
     self._ref_lines: list[_RefLine] = []
+    # value<->drawn-position transforms for ref lines (identity for curve metrics;
+    # frequency<->row-index for the spectrogram). Reset each render.
+    self._ref_to_pos = lambda v: v
+    self._ref_from_pos = lambda p: p
+    self._ref_fmt = lambda v: f"{v:.2f}"
     self._show_empty()
 
   # ---- public API ---------------------------------------------------------
@@ -187,10 +203,14 @@ class AudioVisualizationWidget(QWidget):
     self._ref_props = props
     self._draw_ref_lines()
 
-  def current_view_center_y(self) -> float:
-    """Mid-point of the current y view — a sane default position for a new line."""
+  def current_view_center_value(self) -> float:
+    """Natural-unit value at the current y-view centre — default for a new line.
+
+    Runs through `from_pos`, so on the spectrogram this returns a frequency, not
+    a row index.
+    """
     (_, _), (y0, y1) = self.plot.viewRange()
-    return (y0 + y1) / 2.0
+    return float(self._ref_from_pos((y0 + y1) / 2.0))
 
   def set_status(self, message: str):
     self.status_label.setText(message)
@@ -269,6 +289,13 @@ class AudioVisualizationWidget(QWidget):
     img.setRect(pg.QtCore.QRectF(t0, 0.0, t1 - t0, float(n_rows)))
     self.plot.addItem(img)
 
+    # Reference lines on the spectrogram are entered/shown in Hz but drawn at a
+    # row index — install the frequency<->row transforms for this f_grid.
+    rows = np.arange(n_rows)
+    self._ref_to_pos = lambda hz, fg=f_grid, r=rows: float(np.interp(hz, fg, r))
+    self._ref_from_pos = lambda pos, fg=f_grid, r=rows: float(np.interp(pos, r, fg))
+    self._ref_fmt = lambda v: f"{v:.0f} Hz"
+
     # Label the row-index y-axis with real frequencies.
     ticks = []
     for hz in _LOG_FREQ_TICKS:
@@ -309,7 +336,8 @@ class AudioVisualizationWidget(QWidget):
     """(Re)create draggable lines from the current RefLineProps set."""
     self._remove_ref_line_items()
     for idx, props in enumerate(self._ref_props):
-      line = _RefLine(idx, props, on_moved=self.referenceLineMoved.emit)
+      line = _RefLine(idx, props, self._ref_to_pos, self._ref_from_pos,
+                      self._ref_fmt, on_moved=self.referenceLineMoved.emit)
       self.plot.addItem(line)
       self._ref_lines.append(line)
 
@@ -338,6 +366,10 @@ class AudioVisualizationWidget(QWidget):
     self.legend.clear()
     self.plot.getAxis("left").setTicks(None)  # drop heatmap freq ticks
     self.plot.setLogMode(x=False, y=False)
+    # Back to identity; the heatmap path reinstalls Hz<->row if needed.
+    self._ref_to_pos = lambda v: v
+    self._ref_from_pos = lambda p: p
+    self._ref_fmt = lambda v: f"{v:.2f}"
 
   def _show_empty(self):
     text = pg.TextItem("Drop an audio file to see analysis", anchor=(0.5, 0.5),

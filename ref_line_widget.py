@@ -26,7 +26,7 @@ _STYLE_CHOICES = [("Solid", "solid"), ("Dashed", "dash"), ("Dotted", "dot")]
 class RefLineDialog(QDialog):
   """Edit one reference line's properties. Read the result via `result_props`."""
 
-  def __init__(self, parent, props: RefLineProps):
+  def __init__(self, parent, props: RefLineProps, value_units: str = ""):
     super().__init__(parent)
     self.setWindowTitle("Reference line")
     self._color = props.color
@@ -37,6 +37,8 @@ class RefLineDialog(QDialog):
     self.value_spin.setRange(-1e6, 1e6)
     self.value_spin.setDecimals(2)
     self.value_spin.setValue(props.value)
+    if value_units:
+      self.value_spin.setSuffix(f" {value_units}")
     form.addRow("Value:", self.value_spin)
 
     self.color_button = QPushButton()

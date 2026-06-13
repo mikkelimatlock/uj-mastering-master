@@ -1,8 +1,8 @@
 """
-Plot control widget: pick which metric to display and refresh the current plot.
+Plot control widget: pick the metric, set axis scale/mode, refresh the plot.
 
-Mirrors FontControlWidget's clustered-groupbox style so the two sit naturally
-next to each other in the left panel.
+A clustered groupbox for the left panel: metric selector, log-frequency toggle,
+relative-time toggle, and a manual refresh button.
 """
 
 import logging
@@ -57,14 +57,13 @@ class PlotControlWidget(QWidget):
     self.log_freq_check.toggled.connect(lambda _: self.viewChanged.emit())
     group_layout.addWidget(self.log_freq_check)
 
-    # Time axis: absolute seconds vs relative % of each track's own length, so
-    # tracks of very different durations line up by song position when overlaid.
-    group_layout.addWidget(QLabel("Time axis:"))
-    self.x_mode_combo = QComboBox()
-    self.x_mode_combo.addItem("Absolute (seconds)", X_ABSOLUTE)
-    self.x_mode_combo.addItem("Relative (%)", X_RELATIVE)
-    self.x_mode_combo.currentIndexChanged.connect(lambda _: self.viewChanged.emit())
-    group_layout.addWidget(self.x_mode_combo)
+    # Time axis: off = absolute seconds, on = relative % of each track's own
+    # length, so tracks of very different durations line up by song position.
+    self.relative_time_check = QCheckBox("Relative time axis (%)")
+    self.relative_time_check.setToolTip(
+      "Off: time in seconds. On: 0-100% of each track's own length")
+    self.relative_time_check.toggled.connect(lambda _: self.viewChanged.emit())
+    group_layout.addWidget(self.relative_time_check)
 
     button_row = QHBoxLayout()
     self.refresh_button = QPushButton("Refresh Plot")
@@ -87,5 +86,5 @@ class PlotControlWidget(QWidget):
   def current_view_state(self) -> ViewState:
     return ViewState(
       y_log=self.log_freq_check.isChecked(),
-      x_mode=self.x_mode_combo.currentData(),
+      x_mode=X_RELATIVE if self.relative_time_check.isChecked() else X_ABSOLUTE,
     )

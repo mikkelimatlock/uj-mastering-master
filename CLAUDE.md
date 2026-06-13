@@ -9,7 +9,7 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 - **Pluggable Metrics**: Switchable visualizations (RMS Power, Waveform, LUFS, Crest Factor, PSR, True Peak, Spectrogram; DR next) via a `Metric` ABC
 - **Metadata Extraction**: Reads ID3 tags from MP3 files for better file identification
 - **Modular GUI Architecture**: Complete PyQt5 interface with drag-and-drop and file dialog support
-- **Font Management**: Comprehensive CJK-compatible font system with user-provided font support
+- **Font Management**: CJK-capable, fixed UI font (M PLUS 1 Code @ 10pt) with system fallback
 - **Threading & Logging**: Robust background processing with detailed logging system
 
 ### Technical stack
@@ -49,11 +49,14 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 - The seam that decouples metrics from the plotting library: metrics emit
   *intent*, the renderer owns colour/layout/library specifics
 
-#### `font_control_widget.py` & `font_manager.py`
-- Unified font control system with clustered interface
-- Auto-detection of custom fonts from `fonts/` directory
-- System font discovery and CJK compatibility
-- Font changes trigger a cheap re-render of the cached metric data
+#### `font_manager.py`
+- Auto-detection of custom fonts from `fonts/` directory; CJK fallbacks
+- `apply_fixed_font(family, size)` locks the Qt app font (used at startup to pin
+  the UI to **M PLUS 1 Code @ 10pt**, falling back to the system default if the
+  family isn't found). There is no runtime font picker — the old
+  `font_control_widget.py` was removed as wasted panel space
+- pyqtgraph and the Qt widgets both read the app font, so this covers the plot
+  too (M PLUS 1 Code has full Japanese coverage, so titles stay CJK-safe)
 
 #### `plot_control_widget.py`
 - Metric selector dropdown driven by the `metrics.METRICS` registry
@@ -123,13 +126,14 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
   (pyqtgraph ViewBox); log/linear frequency toggle. Scroll zooms both axes;
   **Ctrl+scroll** zooms time only, **Shift+scroll** zooms the value axis only
   (`_AxisZoomViewBox`); scrolling over an axis also zooms just that axis
-- **Time-axis mode**: Absolute (seconds) or Relative (% of each track's own
-  length), so tracks of very different durations line up by song position
+- **Time-axis mode**: a Relative-time toggle — off = seconds, on = 0-100% of each
+  track's own length, so tracks of very different durations line up by position
 - **Custom reference lines**: side-panel list (Add/Edit/Remove/Clear) of draggable
   horizontal markers with value/colour/style/tag; dragged via a triangle handle.
-  Persist across redraws/overlay changes; cleared when the metric changes
-- **Font control**: Unified font selector with size control
-- **Plot control**: Metric selector + log-frequency toggle + time-axis mode
+  Kept **per metric** (so switching metrics doesn't lose them) and expressed in
+  the metric's own units — on the spectrogram they read and edit in **Hz** (the
+  renderer converts Hz<->row index, since the heatmap y-axis is a row index)
+- **Plot control**: Metric selector + log-frequency toggle + relative-time toggle
   + refresh-plot button
 - **Analysis display**: Real-time visualization with metadata panels
 - **Modular architecture**: Self-contained widgets for easy layout management
