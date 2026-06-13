@@ -30,10 +30,16 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 - Real-time analysis display and file management
 
 #### `analysis_results_manager.py`
-- Background threading for audio analysis
+- Background threading for audio analysis (`AudioAnalysisWorker` = load + first
+  metric; `MetricComputeWorker` = one metric on an already-loaded file)
 - Caches both the loaded `AudioFile` and per-metric `compute()` output, so
   metric/font switches re-render from cache without reloading librosa
-- Progress tracking and error handling
+- **Prefetch** (`PrefetchWorker`): after a file loads, the remaining metrics are
+  computed in the background (one at a time, cooperatively cancellable) so the
+  first switch to any metric is instant too. Superseded when a new file loads
+- Timing: workers measure compute time; `metricTiming` + phase/duration progress
+  messages drive the status slip ("X computed in Ys", "Loaded in Ns — computing…")
+- `shutdown()` stops all threads on window close (`MainWindow.closeEvent`)
 
 #### `audio_visualization_widget.py`
 - Persistent pyqtgraph plot — the PlotItem is reused across renders, never torn
@@ -82,10 +88,12 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 - Current registry:
   - `RMSPowerMetric` — 10 s rolling RMS with adaptive colour scale
   - `WaveformMetric` — min/max envelope, fixed ±1.1 y-range
-  - `LUFSMetric` — true (ungated) EBU R128 short-term (3 s) computed via a single
-    K-weighting pass (`_short_term_lufs`, reusing pyloudnorm's filter
-    coefficients) + a vectorised sliding mean-square; integrated + LRA still come
-    from pyloudnorm (one gated call each). ~2× faster than the old per-window loop
+  - `LUFSMetric` — true (ungated) EBU R128 short-term (3 s) via a single
+    K-weighting pass (`_kweight`, cached) + a vectorised sliding mean-square.
+    Integrated (`_integrated_lufs`) and LRA (`_loudness_range`) are reimplemented
+    from the same cached K-weighted signal — validated **bit-equal** to
+    pyloudnorm — so nothing re-filters the signal. ~3.8 s → ~0.6 s. pyloudnorm is
+    now used only to source the BS.1770 filter coefficients
   - `CrestFactorMetric` — 20·log10(peak/RMS) per 1 s window; peaks via O(N) running max
   - `PSRMetric` — sample-peak minus short-term LUFS (3 s window); reuses
     `LUFSMetric`'s short-term series (memoised on the `AudioFile`), so PSR is
@@ -211,7 +219,8 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 - numpy: Numerical computations
 - scipy: Signal processing (true-peak polyphase oversampling, K-weighting
   filters, spectrogram log-frequency resample, O(N) running-max via ndimage)
-- pyloudnorm: BS.1770 loudness (LUFS, LRA)
+- pyloudnorm: source of the BS.1770 K-weighting filter coefficients (the LUFS
+  short-term / integrated / LRA math is now computed directly, validated against it)
 - pyqtgraph: Interactive plotting (zoom/pan, overlay, lin/log)
 - matplotlib: Colormaps only (consumed by pyqtgraph) + librosa dependency
 - mutagen: Audio metadata extraction

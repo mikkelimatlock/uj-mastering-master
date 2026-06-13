@@ -17,7 +17,6 @@ the renderer, applied uniformly to every metric.
 
 from __future__ import annotations
 
-import warnings
 from abc import ABC, abstractmethod
 from typing import Any
 
@@ -61,18 +60,95 @@ def _window_peaks(abs_signal: np.ndarray, starts: np.ndarray, window_n: int) -> 
   return running[centers]
 
 
+# BS.1770 loudness offset and absolute gate, shared by the routines below.
+_LUFS_OFFSET = -0.691
+_ABS_GATE = -70.0
+
+
+def _kweight(audio_file: AudioFile) -> np.ndarray:
+  """K-weighted mono signal (float64), filtered once and cached on the AudioFile.
+
+  Uses pyloudnorm's own BS.1770 biquad coefficients and filtering (passband_gain
+  * lfilter, exactly as `IIRfilter.apply_filter`), so every loudness quantity
+  derived from it matches pyloudnorm. Depends on `Meter._filters` internals; the
+  dev-time validation guards against a coefficient change.
+  """
+  cached = getattr(audio_file, "_yk", None)
+  if cached is not None:
+    return cached
+  yk = audio_file.y_mono.astype(np.float64, copy=False)
+  for filt in pyln.Meter(audio_file.sr)._filters.values():
+    yk = filt.passband_gain * scipy_signal.lfilter(filt.b, filt.a, yk)
+  audio_file._yk = yk
+  return yk
+
+
+def _block_loudness(yk: np.ndarray, sr: int, block_s: float, step_pct: float):
+  """Per-block mean-square energy `z` and block loudness `l`, matching pyloudnorm.
+
+  Blocks are `block_s` long, stepped by `block_s * step_pct`; energy is divided
+  by the *nominal* block length (not the rounded sample count), exactly as
+  BS.1770 / pyloudnorm define it.
+  """
+  T = len(yk) / sr
+  n_blocks = int(np.round((T - block_s) / (block_s * step_pct)) + 1)
+  if n_blocks < 1:
+    return np.array([]), np.array([])
+  j = np.arange(n_blocks)
+  lo = (block_s * (j * step_pct) * sr).astype(int)
+  up = np.minimum((block_s * (j * step_pct + 1) * sr).astype(int), len(yk))
+  csq = np.concatenate(([0.0], np.cumsum(yk * yk)))
+  z = (csq[up] - csq[lo]) / (block_s * sr)
+  with np.errstate(divide="ignore"):
+    l = _LUFS_OFFSET + 10.0 * np.log10(z)
+  return z, l
+
+
+def _integrated_lufs(yk: np.ndarray, sr: int) -> float:
+  """ITU-R BS.1770 integrated (two-stage gated) loudness from the K-weighted signal.
+
+  Reimplements pyloudnorm's gating on 400 ms / 75%-overlap blocks — validated
+  bit-equal to `Meter.integrated_loudness` — so the whole-signal re-filter that
+  pyloudnorm would do is avoided (the K-weighting is already cached).
+  """
+  z, l = _block_loudness(yk, sr, block_s=0.4, step_pct=0.25)
+  abs_gated = l >= _ABS_GATE
+  if not abs_gated.any():
+    return float("-inf")
+  gamma_r = _LUFS_OFFSET + 10.0 * np.log10(np.mean(z[abs_gated])) - 10.0
+  gated = (l > gamma_r) & (l > _ABS_GATE)
+  if not gated.any():
+    return float("-inf")
+  return float(_LUFS_OFFSET + 10.0 * np.log10(np.mean(z[gated])))
+
+
+def _loudness_range(yk: np.ndarray, sr: int) -> float:
+  """EBU Tech 3342 loudness range (LU) from the K-weighted signal.
+
+  3 s blocks at ~10 Hz with 1.5 s of trailing silence, absolute + relative
+  gating, then the 95th-minus-10th percentile spread — matching pyloudnorm's
+  `loudness_range` (validated bit-equal).
+  """
+  yk_padded = np.concatenate((yk, np.zeros(int(1.5 * sr))))
+  _, l = _block_loudness(yk_padded, sr, block_s=3.0, step_pct=0.03)
+  abs_gated = l[l >= _ABS_GATE]
+  if len(abs_gated) == 0:
+    return float("nan")
+  stl_integrated = 10.0 * np.log10(np.mean(np.power(10.0, abs_gated / 10.0)))
+  rel_gated = abs_gated[abs_gated >= stl_integrated - 20.0]
+  if len(rel_gated) == 0:
+    return float("nan")
+  return float(np.percentile(rel_gated, 95) - np.percentile(rel_gated, 10))
+
+
 def _short_term_lufs(audio_file: AudioFile, window_s: float, hop_s: float):
   """True (ungated) EBU R128 short-term loudness series + window-centre times.
 
-  K-weights the whole signal *once* with pyloudnorm's own BS.1770 biquad
-  coefficients, then takes a vectorised sliding mean-square. This is ~8x faster
+  A vectorised sliding mean-square over the cached K-weighted signal — ~8x faster
   than the old loop of per-window `integrated_loudness` calls, which also wrongly
-  gated each 3 s window — short-term loudness is ungated by definition. The
-  integrated number and LRA (which *are* gated) still come from pyloudnorm.
+  gated each 3 s window (short-term loudness is ungated by definition).
 
-  Memoised on the AudioFile so LUFS and PSR (same 3 s / 0.5 s window) share one
-  computation. Depends on pyloudnorm's `Meter._filters` internals; the dev-time
-  validation against pyloudnorm guards against a coefficient change.
+  Memoised on the AudioFile so LUFS and PSR (same 3 s / 0.5 s window) share it.
   """
   key = (round(window_s, 6), round(hop_s, 6))
   cache = getattr(audio_file, "_st_lufs_cache", None)
@@ -81,24 +157,20 @@ def _short_term_lufs(audio_file: AudioFile, window_s: float, hop_s: float):
   if key in cache:
     return cache[key]
 
-  y = audio_file.y_mono.astype(np.float64, copy=False)
+  yk = _kweight(audio_file)
   sr = audio_file.sr
-  meter = pyln.Meter(sr)
-  yk = y
-  for filt in meter._filters.values():
-    yk = scipy_signal.lfilter(filt.b, filt.a, yk) * filt.passband_gain
-
+  n = len(yk)
   window_n = max(int(window_s * sr), 1)
   hop_n = max(int(hop_s * sr), 1)
-  if len(y) < window_n:
-    ms = float(np.mean(yk * yk)) if len(yk) else 0.0
-    times = np.array([len(y) / (2.0 * sr)])
-    lufs = np.array([-0.691 + 10.0 * np.log10(max(ms, _EPS))])
+  if n < window_n:
+    ms = float(np.mean(yk * yk)) if n else 0.0
+    times = np.array([n / (2.0 * sr)])
+    lufs = np.array([_LUFS_OFFSET + 10.0 * np.log10(max(ms, _EPS))])
   else:
     csq = np.concatenate(([0.0], np.cumsum(yk * yk)))
-    starts = _window_starts(len(y), window_n, hop_n)
+    starts = _window_starts(n, window_n, hop_n)
     ms = (csq[starts + window_n] - csq[starts]) / window_n
-    lufs = -0.691 + 10.0 * np.log10(np.maximum(ms, _EPS))
+    lufs = _LUFS_OFFSET + 10.0 * np.log10(np.maximum(ms, _EPS))
     times = (starts + window_n / 2.0) / sr
 
   cache[key] = (times, lufs)
@@ -208,7 +280,6 @@ class LUFSMetric(Metric):
   SILENCE_FLOOR = -70.0  # BS.1770 absolute gate
 
   def compute(self, audio_file: AudioFile):
-    y = audio_file.y_mono.astype(np.float64, copy=False)
     sr = audio_file.sr
 
     # Short-term series: fast, ungated, shared with PSR.
@@ -216,18 +287,10 @@ class LUFSMetric(Metric):
     lufs = np.clip(np.where(np.isfinite(lufs), lufs, self.SILENCE_FLOOR),
                    self.SILENCE_FLOOR, 0.0)
 
-    # Integrated loudness + LRA keep pyloudnorm's exact gating (one call each).
-    meter = pyln.Meter(sr)
-    with warnings.catch_warnings():
-      warnings.simplefilter("ignore")
-      integrated = self._safe_integrated(meter, y)
-      if len(y) >= int(self.WINDOW_S * sr):
-        try:
-          lra = float(meter.loudness_range(y))
-        except (ValueError, FloatingPointError):
-          lra = float("nan")
-      else:
-        lra = float("nan")
+    # Integrated + LRA from the same cached K-weighting (gating matches pyloudnorm).
+    yk = _kweight(audio_file)
+    integrated = _integrated_lufs(yk, sr)
+    lra = _loudness_range(yk, sr) if len(yk) >= int(self.WINDOW_S * sr) else float("nan")
 
     return {
       "times": times,
@@ -235,13 +298,6 @@ class LUFSMetric(Metric):
       "integrated": float(integrated),
       "lra": lra,
     }
-
-  @staticmethod
-  def _safe_integrated(meter: "pyln.Meter", segment: np.ndarray) -> float:
-    try:
-      return float(meter.integrated_loudness(segment))
-    except (ValueError, FloatingPointError):
-      return float("-inf")
 
   def build_spec(self, data, view=DEFAULT_VIEW) -> PlotSpec:
     times = data["times"]

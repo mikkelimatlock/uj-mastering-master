@@ -121,8 +121,14 @@ class MainWindow(QMainWindow):
         self.analysis_manager.metricComputeStarted.connect(self.on_metric_compute_started)
         self.analysis_manager.metricReady.connect(self.on_metric_ready)
         self.analysis_manager.metricComputeError.connect(self.on_metric_compute_error)
+        self.analysis_manager.metricTiming.connect(self.on_metric_timing)
         self.visualization_widget.referenceLineMoved.connect(self.on_reference_line_moved)
     
+    def closeEvent(self, event):
+        """Stop background analysis/prefetch threads before the window closes."""
+        self.analysis_manager.shutdown()
+        super().closeEvent(event)
+
     def dragEnterEvent(self, event):
         """Handle drag enter event for file drops."""
         if event.mimeData().hasUrls():
@@ -199,9 +205,13 @@ class MainWindow(QMainWindow):
         self.visualization_widget.set_status(f"Error analyzing {filename}: {error_message}")
     
     def on_progress_update(self, message, percentage):
-        """Called when analysis progress updates."""
+        """Called when analysis progress updates.
+
+        The messages already carry phase + timing; the percentage was a coarse
+        fake (load jumped 10->done), so it's logged but not shown in the slip.
+        """
         self.logger.debug(f"Progress: {message} ({percentage}%)")
-        self.visualization_widget.set_status(f"{message} ({percentage}%)")
+        self.visualization_widget.set_status(message)
     
     def on_file_selected(self, item):
         """Called when a file is highlighted (drives the metadata panel only)."""
@@ -295,6 +305,16 @@ class MainWindow(QMainWindow):
         if file_path not in self._overlay_paths():
             return  # no longer part of the overlay set
         self._refresh_view()
+
+    def on_metric_timing(self, file_path: str, metric_id: str, seconds: float):
+        """An on-demand metric compute finished — report how long it took."""
+        if file_path not in self._overlay_paths():
+            return
+        if metric_id != self.plot_control.current_metric_id():
+            return
+        metric = METRICS.get(metric_id)
+        display = metric.display_name if metric else metric_id
+        self.visualization_widget.set_status(f"{display} computed in {seconds:.1f}s")
 
     def on_metric_compute_error(self, file_path: str, metric_id: str, error_message: str):
         self.logger.error(f"Metric compute failed ({metric_id} / {os.path.basename(file_path)}): {error_message}")
