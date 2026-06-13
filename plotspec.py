@@ -103,6 +103,25 @@ class PlotSpec:
 
 
 @dataclass
+class RefLineProps:
+  """A user-defined horizontal reference line.
+
+  Owned by the GUI controller and passed to the renderer, which draws it as a
+  draggable line and writes `value` back on drag. Persists across redraws; the
+  GUI clears the set when the metric changes (the value axis units change).
+  """
+  value: float
+  color: str = "#444444"
+  style: str = "dash"   # 'solid' | 'dash' | 'dot'
+  label: str = ""       # tag shown on the line; falls back to the value
+
+
+# X-axis modes for comparison.
+X_ABSOLUTE = "absolute"   # time in seconds (native)
+X_RELATIVE = "relative"   # 0-100% of each track's own length
+
+
+@dataclass
 class ViewState:
   """User-controlled, recompute-free view options.
 
@@ -112,12 +131,49 @@ class ViewState:
   """
   y_log: Optional[bool] = None
   x_log: Optional[bool] = None
+  x_mode: str = X_ABSOLUTE
 
   def resolve_y_log(self, default: bool) -> bool:
     return self.y_log if self.y_log is not None else default
 
   def resolve_x_log(self, default: bool) -> bool:
     return self.x_log if self.x_log is not None else default
+
+
+def apply_x_mode(spec: PlotSpec, mode: str) -> PlotSpec:
+  """Rewrite a spec's x-axis to relative position (0-100%) in place, if asked.
+
+  Each dataset is normalised to *its own* span, so tracks of different lengths
+  line up by song position — the point of relative mode. A pure view transform:
+  it reassigns the x arrays (cached data is left untouched) and relabels the
+  axis. No-op for absolute mode.
+  """
+  if mode != X_RELATIVE:
+    return spec
+
+  xs = [c.x for c in spec.curves] + [b.x for b in spec.bands]
+  if spec.heatmap is not None:
+    xs.append(spec.heatmap.x)
+  xs = [x for x in xs if len(x)]
+  if not xs:
+    return spec
+
+  lo = min(float(x[0]) for x in xs)
+  hi = max(float(x[-1]) for x in xs)
+  span = (hi - lo) or 1.0
+
+  def rel(x):
+    return (x - lo) / span * 100.0
+
+  for c in spec.curves:
+    c.x = rel(c.x)
+  for b in spec.bands:
+    b.x = rel(b.x)
+  if spec.heatmap is not None:
+    spec.heatmap.x = rel(spec.heatmap.x)
+  spec.axes.x_label = "Position (%)"
+  spec.axes.x_range = (0.0, 100.0)
+  return spec
 
 
 # A neutral default reused wherever a caller hasn't supplied view options.

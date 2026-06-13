@@ -13,21 +13,20 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import pyqtSignal
 
 from metrics import METRICS, DEFAULT_METRIC_ID
-from plotspec import ViewState
+from plotspec import ViewState, X_ABSOLUTE, X_RELATIVE
 
 
 class PlotControlWidget(QWidget):
-  """Metric selector, view-scale toggle, and manual plot refresh.
+  """Metric selector, view-scale/x-mode toggles, and manual plot refresh.
 
-  Overlay/compare is driven by the file-list checkboxes, not here — this cluster
-  only governs *what* metric and *how* its axes are scaled.
+  Overlay/compare membership is driven by the file-list checkboxes and reference
+  lines by their own cluster; this one governs *what* metric and *how* its axes
+  are scaled (lin/log frequency) and laid out (absolute vs relative time).
   """
 
   metricChanged = pyqtSignal(str)        # metric_id
-  viewChanged = pyqtSignal()             # view-state (scale) changed
+  viewChanged = pyqtSignal()             # view-state (scale / x-mode) changed
   plotRefreshRequested = pyqtSignal()
-  addReferenceLineRequested = pyqtSignal()
-  clearReferenceLinesRequested = pyqtSignal()
 
   def __init__(self, parent=None):
     super().__init__(parent)
@@ -58,18 +57,14 @@ class PlotControlWidget(QWidget):
     self.log_freq_check.toggled.connect(lambda _: self.viewChanged.emit())
     group_layout.addWidget(self.log_freq_check)
 
-    # Custom reference lines: drop a draggable horizontal marker (e.g. an
-    # eyeballed effective average) onto whatever metric is showing.
-    ref_row = QHBoxLayout()
-    self.add_ref_button = QPushButton("Add ref line")
-    self.add_ref_button.setToolTip("Drop a draggable horizontal reference line")
-    self.add_ref_button.clicked.connect(self.addReferenceLineRequested.emit)
-    ref_row.addWidget(self.add_ref_button)
-    self.clear_ref_button = QPushButton("Clear")
-    self.clear_ref_button.setToolTip("Remove all custom reference lines")
-    self.clear_ref_button.clicked.connect(self.clearReferenceLinesRequested.emit)
-    ref_row.addWidget(self.clear_ref_button)
-    group_layout.addLayout(ref_row)
+    # Time axis: absolute seconds vs relative % of each track's own length, so
+    # tracks of very different durations line up by song position when overlaid.
+    group_layout.addWidget(QLabel("Time axis:"))
+    self.x_mode_combo = QComboBox()
+    self.x_mode_combo.addItem("Absolute (seconds)", X_ABSOLUTE)
+    self.x_mode_combo.addItem("Relative (%)", X_RELATIVE)
+    self.x_mode_combo.currentIndexChanged.connect(lambda _: self.viewChanged.emit())
+    group_layout.addWidget(self.x_mode_combo)
 
     button_row = QHBoxLayout()
     self.refresh_button = QPushButton("Refresh Plot")
@@ -90,4 +85,7 @@ class PlotControlWidget(QWidget):
     return self.metric_combo.currentData() or DEFAULT_METRIC_ID
 
   def current_view_state(self) -> ViewState:
-    return ViewState(y_log=self.log_freq_check.isChecked())
+    return ViewState(
+      y_log=self.log_freq_check.isChecked(),
+      x_mode=self.x_mode_combo.currentData(),
+    )

@@ -11,8 +11,9 @@ Interaction notes:
 - Plain scroll zooms both axes; Ctrl+scroll zooms time only; Shift+scroll zooms
   the value axis only (see `_AxisZoomViewBox`). Scrolling directly over an axis
   also zooms just that axis (pyqtgraph default).
-- User reference lines (`add_user_line`) are draggable, survive redraws within a
-  metric, and are cleared by the GUI when the metric changes (units change).
+- Reference lines (`set_reference_lines`) are draggable via a triangle handle,
+  survive redraws, and write their position back into the GUI-owned RefLineProps;
+  the GUI clears them when the metric changes (units change).
 
 Why the spectrogram is special: pyqtgraph's ImageItem is affine-only, so it does
 not follow a log-scaled axis. Log frequency is therefore realised by resampling
@@ -24,9 +25,9 @@ import numpy as np
 import pyqtgraph as pg
 from scipy.interpolate import interp1d
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, pyqtSignal
 
-from plotspec import PlotSpec, ViewState, DEFAULT_VIEW
+from plotspec import PlotSpec, ViewState, DEFAULT_VIEW, RefLineProps
 
 # White canvas / black ink to match the previous matplotlib aesthetic.
 pg.setConfigOption("background", "w")
@@ -44,9 +45,6 @@ _PEN_STYLE = {"solid": Qt.SolidLine, "dash": Qt.DashLine, "dot": Qt.DotLine}
 
 # "Nice" frequencies to label on a log frequency axis, in Hz.
 _LOG_FREQ_TICKS = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
-
-# Colour for user-added reference lines (neutral so it reads on any metric).
-_USER_LINE_COLOR = "#444444"
 
 
 def dataset_color(index: int) -> str:
@@ -83,8 +81,39 @@ class _AxisZoomViewBox(pg.ViewBox):
     super().wheelEvent(ev, axis=axis)
 
 
+class _RefLine(pg.InfiniteLine):
+  """A draggable horizontal reference line bound to a RefLineProps.
+
+  Carries a triangle grab-handle at the left edge and writes its position back
+  into the props on drag, notifying the widget so the side-panel list refreshes.
+  """
+
+  def __init__(self, index: int, props: RefLineProps, on_moved):
+    pen = pg.mkPen(props.color, width=1.4,
+                   style=_PEN_STYLE.get(props.style, Qt.DashLine))
+    super().__init__(
+      pos=props.value, angle=0, movable=True, pen=pen,
+      label=props.label or "{value:.2f}",
+      labelOpts={"position": 0.06, "color": props.color,
+                 "fill": (255, 255, 255, 180)},
+    )
+    self._index = index
+    self._props = props
+    self._on_moved = on_moved
+    self.addMarker("|>", position=0.0, size=12)  # triangle handle at the start
+    self.sigPositionChangeFinished.connect(self._commit)
+
+  def _commit(self):
+    self._props.value = float(self.value())
+    self._on_moved(self._index)
+
+
 class AudioVisualizationWidget(QWidget):
   """Persistent interactive plot. Call `show_specs` to (re)draw."""
+
+  # Emitted (with the line's index) when a reference line is dragged, so the
+  # side-panel list can refresh its displayed value.
+  referenceLineMoved = pyqtSignal(int)
 
   def __init__(self, parent=None):
     super().__init__(parent)
@@ -101,10 +130,10 @@ class AudioVisualizationWidget(QWidget):
     layout.addWidget(self.status_label)
 
     self._colorbar = None
-    # User reference lines persist by value across redraws; the items are rebuilt
-    # each render. Cleared by the GUI on metric change (units change).
-    self._user_line_values: list[float] = []
-    self._user_lines: list[pg.InfiniteLine] = []
+    # Reference lines are owned by the GUI controller (RefLineProps objects) and
+    # passed in via set_reference_lines; the line items are rebuilt each render.
+    self._ref_props: list[RefLineProps] = []
+    self._ref_lines: list[_RefLine] = []
     self._show_empty()
 
   # ---- public API ---------------------------------------------------------
@@ -131,8 +160,8 @@ class AudioVisualizationWidget(QWidget):
       self._render_heatmap(spec, view)
       if len(specs) > 1:
         self.set_status(f"{spec.title or label}: spectrogram shows one track at a time")
-      self._apply_axes(base_axes, log_y_image_handled=True)
-      self._draw_user_lines()
+      self._apply_axes(base_axes, single=True, log_y_image_handled=True)
+      self._draw_ref_lines()
       return
 
     single = len(specs) == 1
@@ -150,21 +179,18 @@ class AudioVisualizationWidget(QWidget):
       for note in spec.annotations:
         self._legend_note(prefix + note)
 
-    self._apply_axes(base_axes)
-    self._draw_user_lines()
+    self._apply_axes(base_axes, single=single)
+    self._draw_ref_lines()
 
-  def add_user_line(self, value: float | None = None):
-    """Add a draggable horizontal reference line at `value` (default: view centre)."""
-    if value is None:
-      (_, _), (y0, y1) = self.plot.viewRange()
-      value = (y0 + y1) / 2.0
-    self._user_line_values.append(float(value))
-    self._draw_user_lines()
+  def set_reference_lines(self, props: list[RefLineProps]):
+    """Set the reference-line set (RefLineProps owned by the GUI) and redraw them."""
+    self._ref_props = props
+    self._draw_ref_lines()
 
-  def clear_user_lines(self):
-    """Remove all user reference lines (called when the metric changes)."""
-    self._user_line_values.clear()
-    self._remove_user_line_items()
+  def current_view_center_y(self) -> float:
+    """Mid-point of the current y view — a sane default position for a new line."""
+    (_, _), (y0, y1) = self.plot.viewRange()
+    return (y0 + y1) / 2.0
 
   def set_status(self, message: str):
     self.status_label.setText(message)
@@ -261,11 +287,16 @@ class AudioVisualizationWidget(QWidget):
     self._colorbar.setImageItem(img)
     self.glw.addItem(self._colorbar, row=0, col=1)
 
-  def _apply_axes(self, axes, log_y_image_handled: bool = False):
+  def _apply_axes(self, axes, single: bool, log_y_image_handled: bool = False):
     self.plot.setLabel("bottom", axes.x_label)
     self.plot.setLabel("left", axes.y_label)
-    if axes.x_range:
+    # Frame x exactly only for a single dataset; overlaid tracks of different
+    # lengths (absolute mode) should autorange to their union rather than clip to
+    # the first one's span. In relative mode every spec is 0-100, so either works.
+    if axes.x_range and single:
       self.plot.setXRange(*axes.x_range, padding=0)
+    elif not single:
+      self.plot.enableAutoRange(axis=pg.ViewBox.XAxis)
     if axes.y_range and not log_y_image_handled:
       self.plot.setYRange(*axes.y_range, padding=0)
     if not log_y_image_handled:
@@ -274,29 +305,18 @@ class AudioVisualizationWidget(QWidget):
 
   # ---- user reference lines -----------------------------------------------
 
-  def _draw_user_lines(self):
-    """(Re)create draggable lines from the stored values, preserving positions."""
-    self._remove_user_line_items()
-    for idx in range(len(self._user_line_values)):
-      line = pg.InfiniteLine(
-        pos=self._user_line_values[idx], angle=0, movable=True,
-        pen=pg.mkPen(_USER_LINE_COLOR, width=1.2, style=Qt.DashLine),
-        label="{value:.2f}",
-        labelOpts={"position": 0.05, "color": _USER_LINE_COLOR,
-                   "fill": (255, 255, 255, 180)},
-      )
-      line.sigPositionChanged.connect(lambda ln, i=idx: self._on_user_line_moved(i, ln))
+  def _draw_ref_lines(self):
+    """(Re)create draggable lines from the current RefLineProps set."""
+    self._remove_ref_line_items()
+    for idx, props in enumerate(self._ref_props):
+      line = _RefLine(idx, props, on_moved=self.referenceLineMoved.emit)
       self.plot.addItem(line)
-      self._user_lines.append(line)
+      self._ref_lines.append(line)
 
-  def _on_user_line_moved(self, index: int, line: pg.InfiniteLine):
-    if 0 <= index < len(self._user_line_values):
-      self._user_line_values[index] = float(line.value())
-
-  def _remove_user_line_items(self):
-    for line in self._user_lines:
+  def _remove_ref_line_items(self):
+    for line in self._ref_lines:
       self.plot.removeItem(line)
-    self._user_lines.clear()
+    self._ref_lines.clear()
 
   # ---- legend / lifecycle -------------------------------------------------
 
@@ -307,7 +327,7 @@ class AudioVisualizationWidget(QWidget):
     self.legend.addItem(pg.PlotDataItem(pen=None), text)
 
   def _reset_plot(self):
-    self._remove_user_line_items()  # cleared from scene; values persist for redraw
+    self._remove_ref_line_items()  # cleared from scene; props persist for redraw
     self.plot.clear()
     if self._colorbar is not None:
       try:

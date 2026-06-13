@@ -57,9 +57,18 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
 
 #### `plot_control_widget.py`
 - Metric selector dropdown driven by the `metrics.METRICS` registry
-- Log-frequency toggle (view-state; recompute-free, currently honoured by the
-  spectrogram) and the `Refresh Plot` button
-- Compare/overlay is *not* here — it is driven by the file-list checkboxes
+- Log-frequency toggle and a time-axis mode selector — Absolute (seconds) vs
+  Relative (% of each track's own length) — both view-state, recompute-free
+- `Refresh Plot` button. Compare/overlay membership is the file-list checkboxes;
+  reference lines have their own cluster
+
+#### `ref_line_widget.py`
+- `RefLineControlWidget`: side-panel list of custom reference lines with
+  Add / Edit… / Remove / Clear; a pure view over the `RefLineProps` list the
+  main window owns, emitting intents
+- `RefLineDialog`: edits one line's value, colour, line style, and tag
+- The plot draws each line with a triangle drag-handle; dragging writes the new
+  value back into the shared `RefLineProps` and refreshes the list
 
 #### `metrics.py`
 - Pluggable `Metric` ABC: `compute(audio_file) -> data` (heavy, worker thread,
@@ -114,11 +123,13 @@ A custom mastering toolkit that provides metrics to evaluate audio masterings th
   (pyqtgraph ViewBox); log/linear frequency toggle. Scroll zooms both axes;
   **Ctrl+scroll** zooms time only, **Shift+scroll** zooms the value axis only
   (`_AxisZoomViewBox`); scrolling over an axis also zooms just that axis
-- **Custom reference lines**: "Add ref line" drops a draggable horizontal marker
-  on any metric (e.g. an eyeballed effective average); lines persist across
-  redraws/overlay changes and are cleared automatically when the metric changes
+- **Time-axis mode**: Absolute (seconds) or Relative (% of each track's own
+  length), so tracks of very different durations line up by song position
+- **Custom reference lines**: side-panel list (Add/Edit/Remove/Clear) of draggable
+  horizontal markers with value/colour/style/tag; dragged via a triangle handle.
+  Persist across redraws/overlay changes; cleared when the metric changes
 - **Font control**: Unified font selector with size control
-- **Plot control**: Metric selector + log-frequency toggle + ref-line add/clear
+- **Plot control**: Metric selector + log-frequency toggle + time-axis mode
   + refresh-plot button
 - **Analysis display**: Real-time visualization with metadata panels
 - **Modular architecture**: Self-contained widgets for easy layout management

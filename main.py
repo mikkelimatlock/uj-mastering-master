@@ -12,7 +12,9 @@ from logger_setup import setup_logging, parse_log_args
 from font_manager import initialize_fonts, get_font_manager
 from font_control_widget import FontControlWidget
 from plot_control_widget import PlotControlWidget
+from ref_line_widget import RefLineControlWidget, RefLineDialog
 from metrics import METRICS
+from plotspec import RefLineProps, apply_x_mode
 
 
 class MainWindow(QMainWindow):
@@ -24,6 +26,8 @@ class MainWindow(QMainWindow):
         self.analysis_manager = AnalysisResultsManager()
         # Guards programmatic list mutations from triggering re-render storms.
         self._suppress_list_signals = False
+        # Custom reference lines, owned here and pushed to the plot each render.
+        self.ref_lines: list[RefLineProps] = []
         self.initUI()
         self.connect_signals()
     
@@ -74,9 +78,15 @@ class MainWindow(QMainWindow):
         self.plot_control.metricChanged.connect(self.on_metric_changed)
         self.plot_control.viewChanged.connect(self.on_view_changed)
         self.plot_control.plotRefreshRequested.connect(self.on_plot_refresh_requested)
-        self.plot_control.addReferenceLineRequested.connect(self.on_add_reference_line)
-        self.plot_control.clearReferenceLinesRequested.connect(self.on_clear_reference_lines)
         layout.addWidget(self.plot_control)
+
+        # Reference-line management cluster (list + add/edit/remove/clear).
+        self.ref_line_control = RefLineControlWidget()
+        self.ref_line_control.addRequested.connect(self.on_add_reference_line)
+        self.ref_line_control.editRequested.connect(self.on_edit_reference_line)
+        self.ref_line_control.removeRequested.connect(self.on_remove_reference_line)
+        self.ref_line_control.clearRequested.connect(self.on_clear_reference_lines)
+        layout.addWidget(self.ref_line_control)
 
         # File list. Each item carries a checkbox: the checked set is the overlay
         # set drawn on the graph; the highlighted item drives the metadata panel.
@@ -116,6 +126,7 @@ class MainWindow(QMainWindow):
         self.analysis_manager.metricComputeStarted.connect(self.on_metric_compute_started)
         self.analysis_manager.metricReady.connect(self.on_metric_ready)
         self.analysis_manager.metricComputeError.connect(self.on_metric_compute_error)
+        self.visualization_widget.referenceLineMoved.connect(self.on_reference_line_moved)
     
     def dragEnterEvent(self, event):
         """Handle drag enter event for file drops."""
@@ -223,16 +234,47 @@ class MainWindow(QMainWindow):
         self.logger.info(f"Metric changed via GUI: {metric_id}")
         # The value axis units change with the metric, so custom reference lines
         # placed against the old metric no longer mean anything — drop them.
-        self.visualization_widget.clear_user_lines()
+        self.ref_lines.clear()
+        self._sync_ref_lines()
         self._refresh_view()
 
     def on_add_reference_line(self):
-        """Drop a draggable reference line on the current plot."""
-        self.visualization_widget.add_user_line()
+        """Add a reference line at the current view centre, then edit it."""
+        value = self.visualization_widget.current_view_center_y()
+        props = RefLineProps(value=round(value, 2))
+        self.ref_lines.append(props)
+        self._sync_ref_lines()
+        # Open the editor immediately so colour/tag/value can be set right away.
+        self.on_edit_reference_line(len(self.ref_lines) - 1)
+
+    def on_edit_reference_line(self, index: int):
+        """Open the properties dialog for a reference line."""
+        if not (0 <= index < len(self.ref_lines)):
+            return
+        dialog = RefLineDialog(self, self.ref_lines[index])
+        if dialog.exec_():
+            self.ref_lines[index] = dialog.result_props()
+            self._sync_ref_lines()
+
+    def on_remove_reference_line(self, index: int):
+        """Delete a reference line."""
+        if 0 <= index < len(self.ref_lines):
+            del self.ref_lines[index]
+            self._sync_ref_lines()
 
     def on_clear_reference_lines(self):
         """Remove all custom reference lines."""
-        self.visualization_widget.clear_user_lines()
+        self.ref_lines.clear()
+        self._sync_ref_lines()
+
+    def on_reference_line_moved(self, index: int):
+        """A line was dragged on the plot — its value is already updated; refresh list."""
+        self.ref_line_control.set_lines(self.ref_lines)
+
+    def _sync_ref_lines(self):
+        """Push the current reference-line set to both the list view and the plot."""
+        self.ref_line_control.set_lines(self.ref_lines)
+        self.visualization_widget.set_reference_lines(self.ref_lines)
 
     def on_view_changed(self):
         """Called when a view-scale toggle (lin/log) changes. Recompute-free redraw."""
@@ -320,7 +362,8 @@ class MainWindow(QMainWindow):
             # Colour is keyed to the file's row, not its position in the overlay
             # subset, so a song keeps its colour as others are ticked/unticked.
             color = dataset_color(self._row_index(path))
-            specs.append((label, metric.build_spec(data, view), color))
+            spec = apply_x_mode(metric.build_spec(data, view), view.x_mode)
+            specs.append((label, spec, color))
 
         if specs:
             self.visualization_widget.show_specs(specs, view)

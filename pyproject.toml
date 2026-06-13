@@ -33,6 +33,7 @@ py-modules = [
     "font_manager",
     "font_control_widget",
     "plot_control_widget",
+    "ref_line_widget",
     "logger_setup",
     "setup_fonts",
 ]
