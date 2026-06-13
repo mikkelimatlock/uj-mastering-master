@@ -16,6 +16,7 @@ dependencies = [
     # 5.15.2 is the only pyqt5-qt5 release with a Windows wheel; later
     # versions are Linux/macOS only.
     "PyQt5-Qt5==5.15.2 ; sys_platform == 'win32'",
+    "pyqtgraph>=0.14.0",
 ]
 
 [project.scripts]
@@ -28,9 +29,10 @@ py-modules = [
     "audio_visualization_widget",
     "master_core",
     "metrics",
+    "plotspec",
     "font_manager",
-    "font_control_widget",
     "plot_control_widget",
+    "ref_line_widget",
     "logger_setup",
     "setup_fonts",
 ]

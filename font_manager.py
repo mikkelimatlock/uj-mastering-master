@@ -493,11 +493,42 @@ def initialize_fonts() -> bool:
 def safe_title(title: str) -> str:
     """
     Convenience function to get CJK-safe title.
-    
+
     Args:
         title: Original title
-        
+
     Returns:
         str: Safe title for display
     """
     return get_font_manager().get_cjk_safe_title(title)
+
+
+def apply_fixed_font(family: str = "M PLUS 1 Code", size: int = 10) -> str:
+    """Lock the Qt application font to `family` at `size`pt.
+
+    Falls back to the system default family if `family` isn't available (loaded
+    from fonts/ or installed). pyqtgraph and the Qt widgets both read the app
+    font, so this is all the plot/UI need. Returns the family actually used.
+    """
+    logger = logging.getLogger(__name__)
+    app = QCoreApplication.instance()
+    if app is None:
+        logger.warning("apply_fixed_font called before QApplication exists")
+        return family
+
+    try:
+        available = family in set(QFontDatabase().families())
+    except Exception:
+        available = False
+
+    if available:
+        font = QFont(family)
+        chosen = family
+    else:
+        font = QFont()  # system default family
+        chosen = font.defaultFamily()
+        logger.info(f"Font '{family}' not found; using system default '{chosen}'")
+    font.setPointSize(size)
+    app.setFont(font)
+    logger.info(f"Application font locked to '{chosen}' at {size}pt")
+    return chosen

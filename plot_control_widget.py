@@ -1,23 +1,31 @@
 """
-Plot control widget: pick which metric to display and refresh the current plot.
+Plot control widget: pick the metric, set axis scale/mode, refresh the plot.
 
-Mirrors FontControlWidget's clustered-groupbox style so the two sit naturally
-next to each other in the left panel.
+A clustered groupbox for the left panel: metric selector, log-frequency toggle,
+relative-time toggle, and a manual refresh button.
 """
 
 import logging
 from PyQt5.QtWidgets import (
   QWidget, QVBoxLayout, QHBoxLayout, QLabel, QComboBox, QPushButton, QGroupBox,
+  QCheckBox,
 )
 from PyQt5.QtCore import pyqtSignal
 
 from metrics import METRICS, DEFAULT_METRIC_ID
+from plotspec import ViewState, X_ABSOLUTE, X_RELATIVE
 
 
 class PlotControlWidget(QWidget):
-  """Metric selector + manual plot refresh."""
+  """Metric selector, view-scale/x-mode toggles, and manual plot refresh.
+
+  Overlay/compare membership is driven by the file-list checkboxes and reference
+  lines by their own cluster; this one governs *what* metric and *how* its axes
+  are scaled (lin/log frequency) and laid out (absolute vs relative time).
+  """
 
   metricChanged = pyqtSignal(str)        # metric_id
+  viewChanged = pyqtSignal()             # view-state (scale / x-mode) changed
   plotRefreshRequested = pyqtSignal()
 
   def __init__(self, parent=None):
@@ -42,6 +50,21 @@ class PlotControlWidget(QWidget):
     self.metric_combo.currentIndexChanged.connect(self._on_metric_changed)
     group_layout.addWidget(self.metric_combo)
 
+    # Frequency-axis scale. Only the spectrogram honours it today; harmless
+    # elsewhere (build_spec ignores unsupported toggles).
+    self.log_freq_check = QCheckBox("Log frequency (spectrogram)")
+    self.log_freq_check.setChecked(True)
+    self.log_freq_check.toggled.connect(lambda _: self.viewChanged.emit())
+    group_layout.addWidget(self.log_freq_check)
+
+    # Time axis: off = absolute seconds, on = relative % of each track's own
+    # length, so tracks of very different durations line up by song position.
+    self.relative_time_check = QCheckBox("Relative time axis (%)")
+    self.relative_time_check.setToolTip(
+      "Off: time in seconds. On: 0-100% of each track's own length")
+    self.relative_time_check.toggled.connect(lambda _: self.viewChanged.emit())
+    group_layout.addWidget(self.relative_time_check)
+
     button_row = QHBoxLayout()
     self.refresh_button = QPushButton("Refresh Plot")
     self.refresh_button.setToolTip("Re-render the current plot with current settings")
@@ -59,3 +82,9 @@ class PlotControlWidget(QWidget):
 
   def current_metric_id(self) -> str:
     return self.metric_combo.currentData() or DEFAULT_METRIC_ID
+
+  def current_view_state(self) -> ViewState:
+    return ViewState(
+      y_log=self.log_freq_check.isChecked(),
+      x_mode=X_RELATIVE if self.relative_time_check.isChecked() else X_ABSOLUTE,
+    )

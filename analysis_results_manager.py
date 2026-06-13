@@ -214,22 +214,26 @@ class AnalysisResultsManager(QObject):
     self.metric_workers.pop((file_path, metric_id), None)
     self.metricComputeError.emit(file_path, metric_id, error_message)
 
-  def get_metric_figure(self, file_path: str, metric_id: str):
-    """Render a Figure from cached metric data. Returns None if not cached.
+  def get_metric_data(self, file_path: str, metric_id: str):
+    """Return cached metric data, or None if not computed yet.
 
     Never triggers compute — call `request_metric` first and listen for
-    `metricReady` if you need on-demand computation.
+    `metricReady` if you need on-demand computation. Spec/figure building is the
+    GUI layer's job (it owns the view-state), so this stays render-agnostic.
     """
     result = self.results_cache.get(file_path)
     if result is None:
       return None
-    metric = METRICS.get(metric_id)
-    if metric is None:
+    if metric_id not in METRICS:
       return None
-    data = result.metric_data.get(metric_id)
-    if data is None:
-      return None
-    return metric.render(data, file_path)
+    return result.metric_data.get(metric_id)
+
+  def display_label(self, file_path: str) -> str:
+    """Short human label for a file (song name if known, else basename)."""
+    result = self.results_cache.get(file_path)
+    if result is not None and result.song_name:
+      return result.song_name
+    return os.path.basename(file_path)
 
   def get_metadata_text(self, file_path: str) -> str:
     result = self.results_cache.get(file_path)
